@@ -2,51 +2,104 @@
 @tailwind components;
 @tailwind utilities;
 
-@layer base {
-  :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+/*
+ * Theme tokens.
+ *
+ * Everything is expressed as HSL channel triplets so Tailwind can compose them
+ * with opacity modifiers (bg-primary/10). Component markup only ever refers to
+ * these names, never to raw palette values — that is what keeps light and dark
+ * in step and lets the whole product be re-skinned from this one block.
+ *
+ * Contrast targets: body text >= 7:1 on its background, muted text and all
+ * status colors >= 4.5:1, so every status remains legible in both schemes.
+ *
+ * These two blocks are deliberately NOT inside `@layer base`: Tailwind drops a
+ * bare `.dark {}` rule from that layer, which silently left dark mode with the
+ * light palette. Plain CSS is emitted verbatim, and since `.dark` follows
+ * `:root` at equal specificity it wins whenever the class is present.
+ */
+:root {
+    /* Page sits a shade below card, so cards read as raised without a shadow. */
+    --background: 210 40% 98%;
+    --foreground: 222 47% 11%;
+
     --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --card-foreground: 222 47% 11%;
     --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 221.2 83.2% 53.3%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 221.2 83.2% 53.3%;
-    --radius: 0.5rem;
+    --popover-foreground: 222 47% 11%;
+
+    /* Indigo rather than a stock blue: map tiles are full of blues and greens,
+       so the action color needs to sit clearly apart from the map surface. */
+    --primary: 245 58% 51%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 222 47% 20%;
+
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 43%;
+
+    /* Accent is tinted toward primary so hover states feel part of the brand
+       instead of a neutral gray wash. */
+    --accent: 245 60% 96%;
+    --accent-foreground: 245 58% 35%;
+
+    --destructive: 0 72% 46%;
+    --destructive-foreground: 0 0% 100%;
+
+    /* Attendance semantics: present / late / informational. Previously these
+       were hardcoded emerald-600 and amber-600 utilities, which meant dark mode
+       inherited light-mode values and fell below readable contrast. */
+    --success: 158 64% 30%;
+    --success-foreground: 0 0% 100%;
+    --warning: 32 92% 33%;
+    --warning-foreground: 0 0% 100%;
+    --info: 205 85% 38%;
+    --info-foreground: 0 0% 100%;
+
+    --border: 220 13% 90%;
+    --input: 220 13% 88%;
+    --ring: 245 58% 51%;
+
+    --radius: 0.625rem;
   }
 
-  .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 217.2 91.2% 59.8%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 224.3 76.3% 48%;
-  }
+.dark {
+    --background: 224 40% 7%;
+    --foreground: 210 20% 96%;
+
+    --card: 224 33% 10%;
+    --card-foreground: 210 20% 96%;
+    --popover: 224 33% 10%;
+    --popover-foreground: 210 20% 96%;
+
+    /* Lightened so it carries contrast against the dark surface; the paired
+       foreground flips dark to stay readable on top of it. */
+    --primary: 244 84% 71%;
+    --primary-foreground: 245 60% 12%;
+
+    --secondary: 223 25% 17%;
+    --secondary-foreground: 210 20% 96%;
+
+    --muted: 223 25% 17%;
+    --muted-foreground: 217 15% 68%;
+
+    --accent: 223 30% 20%;
+    --accent-foreground: 210 20% 96%;
+
+    --destructive: 0 72% 61%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 158 58% 52%;
+    --success-foreground: 158 80% 8%;
+    --warning: 38 92% 58%;
+    --warning-foreground: 30 90% 10%;
+    --info: 205 90% 62%;
+    --info-foreground: 205 90% 10%;
+
+    --border: 223 25% 19%;
+    --input: 223 25% 24%;
+    --ring: 244 84% 71%;
 }
 
 @layer base {
@@ -56,6 +109,30 @@
   body {
     @apply bg-background text-foreground;
     font-feature-settings: "rlig" 1, "calt" 1;
+    /* Tabular numerals: attendance screens are full of clocks, durations and
+       counters that would otherwise jitter as the digits tick over. */
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* One consistent focus treatment for keyboard users across every control. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+
+  /* Headings tighten as they grow, which keeps large text from looking loose. */
+  h1, h2, h3 {
+    @apply tracking-tight;
+  }
+}
+
+@layer utilities {
+  /* Numeric readouts (durations, distances, coordinates) — keeps columns of
+     figures aligned regardless of which digits are showing. */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
   }
 }
 
@@ -65,4 +142,37 @@
   width: 100%;
   min-height: 300px;
   z-index: 0;
+  /* Match the app's corner radius so maps sit inside cards cleanly. */
+  border-radius: calc(var(--radius) - 2px);
+  background: hsl(var(--muted));
+}
+
+/* Leaflet's own chrome is hardcoded for a light page; align it with the theme
+   so controls and popups don't glare in dark mode. */
+.leaflet-control-attribution,
+.leaflet-bar a {
+  background: hsl(var(--card));
+  color: hsl(var(--muted-foreground));
+  border-color: hsl(var(--border));
+}
+.leaflet-bar a:hover {
+  background: hsl(var(--accent));
+  color: hsl(var(--accent-foreground));
+}
+.leaflet-popup-content-wrapper,
+.leaflet-popup-tip {
+  background: hsl(var(--popover));
+  color: hsl(var(--popover-foreground));
+}
+
+/* Respect users who ask for less motion — the live "checked in" pulse and any
+   transitions stop rather than looping indefinitely. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

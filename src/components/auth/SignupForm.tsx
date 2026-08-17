@@ -63,7 +63,7 @@ export function SignupForm() {
   }
 
   return (
-    <Card className="w-full max-w-md">
+    <Card className="w-full max-w-md shadow-lg shadow-black/5">
       <CardHeader>
         <CardTitle>Create your company</CardTitle>
         <CardDescription>You&apos;ll be the first admin of a new workspace.</CardDescription>

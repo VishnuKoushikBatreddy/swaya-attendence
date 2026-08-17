@@ -29,6 +29,19 @@ public class BootReceiver extends BroadcastReceiver {
             return;
         }
 
+        // Flush any geofence events stranded by the reboot FIRST — before the
+        // checkedIn early-return below. A queued EXIT is precisely the case where
+        // the flag is stale (the employee left, but the check-out never reached
+        // the server), so gating the flush on it would strand the event forever.
+        // WorkManager runs this off the main thread once there is connectivity.
+        try {
+            if (!GeofenceEventQueue.isEmpty(context.getApplicationContext())) {
+                GeofenceUploadWorker.schedule(context.getApplicationContext());
+            }
+        } catch (Exception e) {
+            Log.e("BootReceiver", "failed to schedule geofence flush", e);
+        }
+
         // @capacitor/preferences stores values in the "CapacitorStorage" prefs file.
         SharedPreferences prefs = context.getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE);
         String checkedIn = prefs.getString("checkedIn", "false");

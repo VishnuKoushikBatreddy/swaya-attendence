@@ -2,23 +2,30 @@
  * Today's attendance summary across the company.
  */
 import { NextRequest } from "next/server";
-import { connectDB } from "@/lib/db";
 import { AttendanceDay, User } from "@/models";
 import { requireAuth, ok, withApi } from "@/lib/api-helpers";
 import { todayWorkDate } from "@/lib/workdate";
-import { Company } from "@/models";
+import { getCompanyTimezone } from "@/lib/company";
 
 export const dynamic = "force-dynamic";
 
 export const GET = withApi(async (req: NextRequest) => {
   const session = await requireAuth();
-  const company = await Company.findById(session.user.companyId).lean();
-  const timezone = company?.timezone || "Asia/Kolkata";
+
+  // The timezone lookup and the manager's team lookup are independent, so run
+  // them together. getCompanyTimezone is the cached helper every other route
+  // uses — it usually answers from memory instead of hitting Company at all.
+  const isManager = session.user.role === "manager";
+  const [timezone, team] = await Promise.all([
+    getCompanyTimezone(session.user.companyId),
+    isManager
+      ? User.find({ managerId: session.user.id }).select("_id").lean()
+      : Promise.resolve([] as { _id: unknown }[]),
+  ]);
   const workDate = todayWorkDate(timezone);
 
   const filter: any = { companyId: session.user.companyId, workDate };
-  if (session.user.role === "manager") {
-    const team = await User.find({ managerId: session.user.id }).select("_id").lean();
+  if (isManager) {
     filter.employeeId = { $in: team.map((u: { _id: unknown }) => u._id) };
   } else if (session.user.role === "employee") {
     filter.employeeId = session.user.id;

@@ -90,11 +90,21 @@ export const env = {
   AUTO_CHECKOUT_LUNCH_END: process.env.AUTO_CHECKOUT_LUNCH_END || "14:00",
   // Gap-based auto check-out: if tracking goes silent for longer than this many
   // minutes (the employee closed the app / lost the foreground service), close
-  // the session at the LAST ping received. Kept comfortably above the 3-minute
-  // ping interval so a few dropped pings on a flaky network (lifts, basements,
-  // dead zones) don't end the shift — 15 minutes tolerates ~4 missed pings.
+  // the session at the LAST ping received. Kept comfortably above PING_INTERVAL_MS
+  // so a few dropped pings on a flaky network (lifts, basements, dead zones) don't
+  // end the shift — at the default 3-minute interval, 15 minutes tolerates ~4
+  // missed pings. If you shorten PING_INTERVAL_MS, this stays a wall-clock
+  // tolerance and simply forgives proportionally more misses.
   PING_GAP_CHECKOUT_ENABLED: bool("PING_GAP_CHECKOUT_ENABLED", true),
   PING_GAP_CHECKOUT_MINUTES: num("PING_GAP_CHECKOUT_MINUTES", 15),
+  // How far back a native geofence event's own `capturedAt` may reach. The
+  // Android receiver queues failed uploads and retries them, so a legitimate
+  // event can arrive hours late and must still be applied at the time it
+  // happened. 12 hours covers a full shift spent offline while still bounding
+  // how far a stale or forged timestamp could rewrite history.
+  GEOFENCE_MAX_EVENT_AGE_MINUTES: num("GEOFENCE_MAX_EVENT_AGE_MINUTES", 720),
+  // Tolerance for a device clock running ahead of the server.
+  GEOFENCE_MAX_CLOCK_SKEW_MINUTES: num("GEOFENCE_MAX_CLOCK_SKEW_MINUTES", 5),
   // Shared secret Vercel Cron sends as a Bearer token to the close-shifts job.
   CRON_SECRET: process.env.CRON_SECRET || "",
   SMTP_HOST: process.env.SMTP_HOST || "",

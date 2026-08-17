@@ -38,8 +38,6 @@ export const CheckInSchema = LocationSchema.extend({
 
 export const CheckOutSchema = LocationSchema;
 
-export const PingSchema = LocationSchema;
-
 export const PingBatchSchema = z.object({
   pings: z.array(CheckInSchema.partial({ capturedAt: true })).min(1).max(500),
 });

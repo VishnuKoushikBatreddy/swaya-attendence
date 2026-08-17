@@ -22,9 +22,9 @@ export default function ManagerOverview() {
 
   const cards = [
     { title: "Team size", value: team.length, icon: Users, color: "text-blue-600" },
-    { title: "Present", value: today?.summary?.present ?? 0, icon: CheckCircle2, color: "text-emerald-600" },
-    { title: "Late", value: today?.summary?.late ?? 0, icon: Clock, color: "text-amber-600" },
-    { title: "Flagged", value: today?.summary?.flagged ?? 0, icon: AlertCircle, color: "text-red-600" },
+    { title: "Present", value: today?.summary?.present ?? 0, icon: CheckCircle2, color: "text-success" },
+    { title: "Late", value: today?.summary?.late ?? 0, icon: Clock, color: "text-warning" },
+    { title: "Flagged", value: today?.summary?.flagged ?? 0, icon: AlertCircle, color: "text-destructive" },
   ];
 
   return (

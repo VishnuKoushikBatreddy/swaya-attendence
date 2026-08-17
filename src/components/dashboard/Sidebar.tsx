@@ -4,92 +4,95 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { signOut, useSession } from "next-auth/react";
 import { cn } from "@/lib/utils";
-import {
-  LayoutDashboard,
-  MapPin,
-  Users as UsersIcon,
-  Clock,
-  Calendar,
-  ClipboardList,
-  FileText,
-  LogOut,
-  Settings,
-  Building,
-  Plane,
-} from "lucide-react";
+import { LogOut, MapPin } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { getNav, activeHref } from "./nav-items";
 
-const empNav = [
-  { href: "/employee", label: "Today's check-in", icon: Clock },
-  { href: "/employee/history", label: "History", icon: Calendar },
-  { href: "/employee/leave", label: "Leave", icon: Plane },
-  { href: "/employee/regularization", label: "Regularization", icon: ClipboardList },
-  { href: "/employee/sites", label: "My sites", icon: MapPin },
-];
-
-const mgrNav = [
-  { href: "/manager", label: "Team", icon: UsersIcon },
-  { href: "/manager/approvals", label: "Approvals", icon: ClipboardList },
-  { href: "/manager/reports", label: "Reports", icon: FileText },
-];
-
-const adminNav = [
-  { href: "/admin", label: "Overview", icon: LayoutDashboard },
-  { href: "/admin/sites", label: "Sites", icon: MapPin },
-  { href: "/admin/employees", label: "Employees", icon: UsersIcon },
-  { href: "/admin/shifts", label: "Shifts", icon: Clock },
-  { href: "/admin/schedules", label: "Schedules", icon: Calendar },
-  { href: "/admin/holidays", label: "Holidays", icon: FileText },
-  { href: "/admin/approvals", label: "Approvals", icon: ClipboardList },
-  { href: "/admin/reports", label: "Reports", icon: FileText },
-  { href: "/admin/audit", label: "Audit", icon: Settings },
-];
-
-const superNav = [
-  { href: "/super-admin", label: "Overview", icon: LayoutDashboard },
-  { href: "/super-admin/companies", label: "Companies", icon: Building },
-  { href: "/super-admin/users", label: "Users", icon: UsersIcon },
-];
+const ROLE_LABEL: Record<string, string> = {
+  super_admin: "Super admin",
+  admin: "Admin",
+  manager: "Manager",
+  employee: "Employee",
+};
 
 export function Sidebar({ role }: { role: string }) {
   const pathname = usePathname();
   const { data: session } = useSession();
 
-  let nav: { href: string; label: string; icon: any }[] = [];
-  if (role === "super_admin") nav = superNav;
-  else if (role === "admin") nav = adminNav;
-  else if (role === "manager") nav = mgrNav;
-  else nav = empNav;
+  const nav = getNav(role);
+  const active = activeHref(nav, pathname);
+  const name = session?.user?.name || "";
+  const initials =
+    name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2) || "U";
 
   return (
-    <aside className="hidden w-64 flex-shrink-0 border-r bg-card md:block">
-      <div className="flex h-14 items-center border-b px-4 font-semibold">
-        Geo Attendance
+    <aside className="hidden w-64 flex-shrink-0 flex-col border-r bg-card md:flex">
+      {/* Brand */}
+      <div className="flex h-16 items-center gap-2.5 border-b px-5">
+        <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+          <MapPin className="h-4 w-4" />
+        </span>
+        <span className="flex flex-col leading-none">
+          <span className="text-sm font-semibold tracking-tight">Geo Attendance</span>
+          <span className="mt-1 text-[11px] font-medium text-muted-foreground">
+            {ROLE_LABEL[role] ?? role}
+          </span>
+        </span>
       </div>
-      <nav className="space-y-1 p-2">
+
+      {/* Primary navigation. flex-1 pushes the account block to the bottom. */}
+      <nav className="flex-1 space-y-0.5 overflow-y-auto p-3">
         {nav.map((item) => {
-          const isActive = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href));
+          const isActive = item.href === active;
           const Icon = item.icon;
           return (
             <Link
               key={item.href}
               href={item.href}
+              aria-current={isActive ? "page" : undefined}
               className={cn(
-                "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                "group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
                 isActive
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                  ? "bg-accent text-accent-foreground"
+                  : "text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground"
               )}
             >
-              <Icon className="h-4 w-4" />
-              {item.label}
+              {/* Accent rail marks the active item without repainting the whole
+                  row in primary, which was heavy next to a map-dense page. */}
+              <span
+                className={cn(
+                  "absolute left-0 top-1/2 h-5 w-1 -translate-y-1/2 rounded-r-full bg-primary transition-opacity",
+                  isActive ? "opacity-100" : "opacity-0"
+                )}
+              />
+              <Icon
+                className={cn(
+                  "h-4 w-4 flex-shrink-0 transition-colors",
+                  isActive ? "text-primary" : "text-muted-foreground group-hover:text-accent-foreground"
+                )}
+              />
+              <span className="truncate">{item.label}</span>
             </Link>
           );
         })}
       </nav>
-      <div className="border-t p-2">
+
+      {/* Account */}
+      <div className="border-t p-3">
+        <div className="mb-2 flex items-center gap-2.5 rounded-lg px-2 py-1.5">
+          <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">
+            {initials}
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-medium">{name}</span>
+            <span className="block truncate text-xs text-muted-foreground">
+              {session?.user?.email}
+            </span>
+          </span>
+        </div>
         <Button
           variant="ghost"
+          size="sm"
           className="w-full justify-start text-muted-foreground hover:text-foreground"
           onClick={() => signOut({ callbackUrl: "/login" })}
         >

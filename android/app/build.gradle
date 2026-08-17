@@ -50,6 +50,9 @@ dependencies {
     // Native OS geofencing fallback (tracks site enter/exit even when the app is
     // killed). Used by GeofencePlugin / GeofenceBroadcastReceiver.
     implementation "com.google.android.gms:play-services-location:21.3.0"
+    // Retries geofence uploads that failed offline. Needed because the work must
+    // survive the process dying and a reboot — see GeofenceUploadWorker.
+    implementation "androidx.work:work-runtime:2.9.1"
     testImplementation "junit:junit:$junitVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"

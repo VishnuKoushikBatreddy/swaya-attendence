@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+    <title>Swaya Attendance</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        background: #f8fafc;
+        color: #0f1729;
+        text-align: center;
+        padding: 24px;
+      }
+      @media (prefers-color-scheme: dark) {
+        body { background: #0b1020; color: #f1f5f9; }
+        .muted { color: #94a3b8 !important; }
+      }
+      .badge {
+        width: 44px; height: 44px; margin: 0 auto 16px;
+        border-radius: 12px; background: #463acb;
+        display: flex; align-items: center; justify-content: center;
+      }
+      h1 { font-size: 17px; margin: 0 0 6px; letter-spacing: -0.01em; }
+      p { font-size: 14px; margin: 0; line-height: 1.5; }
+      .muted { color: #64748b; }
+    </style>
+  </head>
+  <body>
+    <!--
+      Placeholder web root for the Capacitor Android shell.
+
+      The app does NOT run from these files: capacitor.config.ts sets server.url,
+      so the WebView loads the deployed site and every web deploy reaches users
+      without a new APK.
+
+      webDir previously pointed at `.next`, which made `cap sync` copy the whole
+      Next.js build directory — including .next/cache — into the APK. That was
+      110 MB of the 117 MB package, none of it ever read. Capacitor requires a
+      webDir containing an index.html, so this minimal page stands in for it.
+    -->
+    <main>
+      <div class="badge">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+             stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z" />
+          <circle cx="12" cy="10" r="3" />
+        </svg>
+      </div>
+      <h1>Swaya Attendance</h1>
+      <p class="muted">Connecting&hellip; check your internet connection if this persists.</p>
+    </main>
+  </body>
+</html>

@@ -24,9 +24,9 @@ export default function AdminOverview() {
 
   const cards = [
     { title: "Employees", value: stats?.employees, icon: Users, color: "text-blue-600" },
-    { title: "Active sites", value: stats?.sites, icon: MapPin, color: "text-emerald-600" },
-    { title: "Present today", value: stats?.presentToday, icon: CheckCircle2, color: "text-emerald-600" },
-    { title: "Flagged today", value: stats?.flagged, icon: AlertCircle, color: "text-amber-600" },
+    { title: "Active sites", value: stats?.sites, icon: MapPin, color: "text-success" },
+    { title: "Present today", value: stats?.presentToday, icon: CheckCircle2, color: "text-success" },
+    { title: "Flagged today", value: stats?.flagged, icon: AlertCircle, color: "text-warning" },
   ];
 
   return (

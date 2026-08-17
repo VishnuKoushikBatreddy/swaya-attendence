@@ -3,11 +3,12 @@ import { GeoPointSchema } from "./GeoPoint";
 
 const AttendanceSessionSchema = new Schema(
   {
+    // No single-field index here: the { attendanceDayId, checkInAt } compound
+    // below already serves any attendanceDayId-only lookup via its prefix.
     attendanceDayId: {
       type: Schema.Types.ObjectId,
       ref: "AttendanceDay",
       required: true,
-      index: true,
     },
     companyId: {
       type: Schema.Types.ObjectId,
@@ -49,7 +50,8 @@ const AttendanceSessionSchema = new Schema(
       type: String,
       enum: ["active", "completed", "auto_closed", "flagged"],
       default: "active",
-      index: true,
+      // Indexed via the { status, checkInAt } compound below, which also covers
+      // the cron sweep's sort — a lone { status } index cannot.
     },
     deviceId: { type: String },
     appVersion: { type: String },
@@ -57,9 +59,15 @@ const AttendanceSessionSchema = new Schema(
   { timestamps: true }
 );
 
-AttendanceSessionSchema.index({ employeeId: 1, status: 1 });
-// Sort active-session lookups by checkInAt without an in-memory sort.
+// Sort active-session lookups by checkInAt without an in-memory sort. Its
+// { employeeId, status } prefix also serves plain employee+status filters, so no
+// separate index is needed for those.
 AttendanceSessionSchema.index({ employeeId: 1, status: 1, checkInAt: -1 });
+// autoCloseEndedShifts sweeps open sessions across ALL employees:
+//   find({ status: { $in: ["active","flagged"] } }).sort({ checkInAt: 1 })
+// A status-only index answers the filter but forces an in-memory sort, which
+// fails outright past MongoDB's 32MB sort limit. This compound serves both.
+AttendanceSessionSchema.index({ status: 1, checkInAt: 1 });
 // recomputeDayTotals / today: all sessions of a day in check-in order.
 AttendanceSessionSchema.index({ attendanceDayId: 1, checkInAt: 1 });
 AttendanceSessionSchema.index({ checkInLocation: "2dsphere" });

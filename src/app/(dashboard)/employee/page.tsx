@@ -33,6 +33,39 @@ const LiveTrackerMap = dynamic(
   { ssr: false, loading: () => <div className="h-[250px] w-full rounded-md border bg-muted animate-pulse" /> }
 );
 
+/**
+ * One figure in the session grid. Cells sit on a `gap-px` border-colored grid so
+ * the hairlines between them come from the container, not per-cell borders.
+ * `emphasis` is for the live work timer, which is the number the employee
+ * actually watches while on shift.
+ */
+function Stat({
+  label,
+  value,
+  emphasis = false,
+}: {
+  label: string;
+  value: string;
+  emphasis?: boolean;
+}) {
+  return (
+    <div className="bg-card p-3.5">
+      <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+        {label}
+      </p>
+      <p
+        className={
+          emphasis
+            ? "mt-1 text-xl font-semibold tabular-nums text-primary"
+            : "mt-1 text-xl font-semibold tabular-nums"
+        }
+      >
+        {value}
+      </p>
+    </div>
+  );
+}
+
 /** H:MM:SS — used for the live, ticking work timer. */
 function formatHMS(totalSeconds: number): string {
   const s = Math.max(0, Math.floor(totalSeconds));
@@ -50,6 +83,8 @@ type TodayState = {
   schedule?: any;
   shift?: any;
   leave?: any;
+  /** Server's PING_INTERVAL_MS — drives the web tracker's cadence. */
+  pingIntervalMs?: number;
 };
 
 export default function EmployeePage() {
@@ -365,10 +400,26 @@ export default function EmployeePage() {
 
   return (
     <div className="space-y-6">
-      <LocationTracker active={isCheckedIn} onAutoCheckout={handleAutoCheckout} />
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Today</h1>
-        <Badge variant={status === "present" ? "success" : status === "late" ? "warning" : "secondary"}>
+      <LocationTracker
+        active={isCheckedIn}
+        intervalMs={today?.pingIntervalMs}
+        onAutoCheckout={handleAutoCheckout}
+      />
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Today</h1>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            {new Date().toLocaleDateString(undefined, {
+              weekday: "long",
+              day: "numeric",
+              month: "long",
+            })}
+          </p>
+        </div>
+        <Badge
+          className="capitalize"
+          variant={status === "present" ? "success" : status === "late" ? "warning" : "secondary"}
+        >
           {status}
         </Badge>
       </div>
@@ -376,7 +427,10 @@ export default function EmployeePage() {
       <Card>
         <CardHeader>
           <CardTitle>Attendance</CardTitle>
-          <CardDescription>{site?.name || "No site assigned"}</CardDescription>
+          <CardDescription className="flex items-center gap-1.5">
+            <MapPin className="h-3.5 w-3.5 flex-shrink-0" />
+            {site?.name || "No site assigned"}
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {site && Array.isArray(site.location?.coordinates) && (
@@ -391,76 +445,79 @@ export default function EmployeePage() {
           )}
 
           {pending.length > 0 && (
-            <div className="rounded-md border border-amber-300 bg-amber-50 p-2 text-center text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+            <div className="rounded-lg border border-warning/30 bg-warning/10 p-2.5 text-center text-xs font-medium text-warning">
               {pending.length} offline action{pending.length > 1 ? "s" : ""} saved — will sync automatically when you&apos;re back online.
             </div>
           )}
 
           {noCheckInNeeded && !isCheckedIn ? (
-            <div className="rounded-md border bg-muted p-4 text-center">
-              <p className="font-medium">{isOnLeave ? "On leave" : "Day off"}</p>
-              <p className="text-sm text-muted-foreground">
+            <div className="rounded-lg border bg-muted/50 p-5 text-center">
+              <p className="font-semibold">{isOnLeave ? "On leave" : "Day off"}</p>
+              <p className="mt-1 text-sm text-muted-foreground">
                 {isOnLeave
                   ? `You're on approved ${today?.leave?.leaveType || ""} leave today — no check-in required.`
                   : "Today is a weekly off or company holiday — no check-in required."}
               </p>
             </div>
           ) : !isCheckedIn ? (
-            <Button className="w-full gap-2" size="lg" onClick={handleCheckIn} disabled={loading}>
-              {loading && <Loader2 className="h-4 w-4 animate-spin" />}
-              <CheckCircle2 className="h-5 w-5" />
+            <Button
+              className="h-14 w-full gap-2 text-base font-semibold shadow-sm"
+              size="lg"
+              onClick={handleCheckIn}
+              disabled={loading}
+            >
+              {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : <CheckCircle2 className="h-5 w-5" />}
               Check in
             </Button>
           ) : (
-            <Button className="w-full gap-2" variant="destructive" size="lg" onClick={handleCheckOut} disabled={loading}>
-              {loading && <Loader2 className="h-4 w-4 animate-spin" />}
-              <XCircle className="h-5 w-5" />
+            <Button
+              className="h-14 w-full gap-2 text-base font-semibold shadow-sm"
+              variant="destructive"
+              size="lg"
+              onClick={handleCheckOut}
+              disabled={loading}
+            >
+              {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : <XCircle className="h-5 w-5" />}
               Check out
             </Button>
           )}
 
-          {/* Session info */}
+          {/* Session info — the figures are the point of this screen, so they
+              lead and the captions sit above them in small caps. */}
           {currentSession && (
-            <div className="grid grid-cols-2 gap-4 text-sm">
-              <div>
-                <Label className="text-muted-foreground">Check-in</Label>
-                <p>{formatTime(currentSession.checkInAt)}</p>
-              </div>
+            <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border bg-border">
+              <Stat label="Check-in" value={formatTime(currentSession.checkInAt)} />
               {today?.day?.lastCheckOutAt && (
-                <div>
-                  <Label className="text-muted-foreground">Check-out</Label>
-                  <p>{formatTime(today.day.lastCheckOutAt)}</p>
-                </div>
+                <Stat label="Check-out" value={formatTime(today.day.lastCheckOutAt)} />
               )}
-              <div>
-                <Label className="text-muted-foreground">Work time</Label>
-                <p className={isCheckedIn ? "tabular-nums" : undefined}>
-                  {isCheckedIn ? formatHMS(liveWorkSeconds) : formatDuration(liveWorkSeconds)}
-                </p>
-              </div>
-              <div>
-                <Label className="text-muted-foreground">Outside</Label>
-                <p>{formatDuration(today?.day?.totalOutsideSeconds || 0)}</p>
-              </div>
+              <Stat
+                label="Work time"
+                value={isCheckedIn ? formatHMS(liveWorkSeconds) : formatDuration(liveWorkSeconds)}
+                emphasis={isCheckedIn}
+              />
+              <Stat
+                label="Outside"
+                value={formatDuration(today?.day?.totalOutsideSeconds || 0)}
+              />
             </div>
           )}
 
           {/* Device status */}
-          <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
             {isCheckedIn && (
-              <span className="flex items-center gap-1.5 font-medium text-emerald-600">
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-success/10 px-2.5 py-1 font-medium text-success">
                 <span className="relative flex h-2 w-2">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-75" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-success" />
                 </span>
                 Tracking active
               </span>
             )}
-            <span className="flex items-center gap-1">
-              <Battery className="h-3 w-3" /> {battery ?? "—"}%
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-muted-foreground">
+              <Battery className="h-3.5 w-3.5" /> {battery ?? "—"}%
             </span>
-            <span className="flex items-center gap-1">
-              <Wifi className="h-3 w-3" /> {network}
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-muted-foreground">
+              <Wifi className="h-3.5 w-3.5" /> {network}
             </span>
           </div>
         </CardContent>
@@ -468,13 +525,19 @@ export default function EmployeePage() {
 
       {/* History summary */}
       <Card>
-        <CardHeader>
-          <CardTitle>Recent days</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground">
-            View your attendance history on the <a href="/employee/history" className="text-primary underline">history page</a>.
-          </p>
+        <CardContent className="p-0">
+          <a
+            href="/employee/history"
+            className="flex items-center justify-between gap-3 rounded-lg p-5 transition-colors hover:bg-accent/60"
+          >
+            <span>
+              <span className="block font-semibold">Recent days</span>
+              <span className="block text-sm text-muted-foreground">
+                Review your full attendance history
+              </span>
+            </span>
+            <Clock className="h-5 w-5 flex-shrink-0 text-muted-foreground" />
+          </a>
         </CardContent>
       </Card>
     </div>

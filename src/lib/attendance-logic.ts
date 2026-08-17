@@ -296,6 +296,47 @@ export function resolveAutoCheckout(opts: {
   return { suppress: false, checkOutAtMs };
 }
 
+// ---------------------------------------------------------------------------
+// Client-supplied timestamp validation (native geofence events).
+// ---------------------------------------------------------------------------
+
+export const EVENT_STALE_REASON = "Event is too old to apply";
+export const EVENT_FUTURE_REASON = "Event timestamp is in the future";
+export const EVENT_INVALID_REASON = "Event timestamp is not a valid date";
+
+/**
+ * Decide whether a client-supplied `capturedAt` may be trusted as the effective
+ * time of an event.
+ *
+ * The native geofence receiver retries failed uploads, so an event legitimately
+ * arrives long after it happened and MUST be applied at its original time — that
+ * is the whole point of the queue. But an unbounded window is dangerous: these
+ * events are authenticated by a long-lived native token rather than a session
+ * cookie, and a stale or forged timestamp would silently rewrite a finished day.
+ *
+ * So: accept anything within `maxAgeMs` of now, reject beyond it, and reject
+ * future timestamps outside a small tolerance for device clock skew.
+ * Rejections are permanent (the caller should DROP, not retry) — a stale event
+ * only gets staler.
+ */
+export function evaluateEventFreshness(
+  capturedAtMs: number,
+  nowMs: number,
+  maxAgeMs: number,
+  maxSkewMs: number
+): { ok: true } | { ok: false; reason: string } {
+  if (!Number.isFinite(capturedAtMs)) {
+    return { ok: false, reason: EVENT_INVALID_REASON };
+  }
+  if (capturedAtMs - nowMs > maxSkewMs) {
+    return { ok: false, reason: EVENT_FUTURE_REASON };
+  }
+  if (nowMs - capturedAtMs > maxAgeMs) {
+    return { ok: false, reason: EVENT_STALE_REASON };
+  }
+  return { ok: true };
+}
+
 export function classifyOutsideForDay(opts: {
   totalOutsideSeconds: number;
   midDayCheckouts: number;

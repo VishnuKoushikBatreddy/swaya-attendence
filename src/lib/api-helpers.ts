@@ -8,13 +8,6 @@ import { connectDB } from "./db";
 
 export type Role = "super_admin" | "admin" | "manager" | "employee";
 
-export const ROLE_HIERARCHY: Record<Role, number> = {
-  super_admin: 100,
-  admin: 80,
-  manager: 40,
-  employee: 10,
-};
-
 export class ApiError extends Error {
   status: number;
   constructor(message: string, status = 400) {
@@ -92,8 +85,4 @@ export function withApi<TArgs extends unknown[]>(
       return fail(message, 500);
     }
   };
-}
-
-export function canActAs(role: Role, target: Role): boolean {
-  return ROLE_HIERARCHY[role] >= ROLE_HIERARCHY[target];
 }

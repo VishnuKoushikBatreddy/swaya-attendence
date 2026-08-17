@@ -52,7 +52,7 @@ function Inner() {
 
   if (!token) {
     return (
-      <Card className="w-full max-w-md">
+      <Card className="w-full max-w-md shadow-lg shadow-black/5">
         <CardHeader>
           <CardTitle>Invalid link</CardTitle>
           <CardDescription>This password reset link is missing or invalid.</CardDescription>
@@ -67,7 +67,7 @@ function Inner() {
   }
 
   return (
-    <Card className="w-full max-w-md">
+    <Card className="w-full max-w-md shadow-lg shadow-black/5">
       <CardHeader>
         <CardTitle>Set a new password</CardTitle>
         <CardDescription>Enter a new password for your account.</CardDescription>

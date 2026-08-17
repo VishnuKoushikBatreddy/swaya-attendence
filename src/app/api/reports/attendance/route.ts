@@ -47,18 +47,20 @@ export const GET = withApi(async (req: NextRequest) => {
 
   const days = await AttendanceDay.find(filter).sort({ workDate: -1 }).limit(5000).lean();
   const userIds = Array.from(new Set(days.map((d: { employeeId: unknown }) => String(d.employeeId))));
-  const users = await User.find({ _id: { $in: userIds } })
-    .select("_id fullName employeeCode email")
-    .lean();
-  const userMap = new Map(users.map((u: { _id: unknown; fullName: string; employeeCode?: string; email: string }) => [String(u._id), u]));
-
-  // How many times each employee actually checked out that day (one count per
-  // completed session — includes auto check-outs). Single aggregation, no N+1.
   const dayIds = days.map((d: { _id: unknown }) => d._id);
-  const counts = await AttendanceSession.aggregate([
-    { $match: { attendanceDayId: { $in: dayIds }, checkOutAt: { $ne: null } } },
-    { $group: { _id: "$attendanceDayId", count: { $sum: 1 } } },
+
+  // Both derive from `days` but not from each other, so issue them together —
+  // the route waits max(user lookup, aggregation) instead of their sum.
+  // The aggregation counts how many times each employee actually checked out
+  // that day (one per completed session, including auto check-outs) — no N+1.
+  const [users, counts] = await Promise.all([
+    User.find({ _id: { $in: userIds } }).select("_id fullName employeeCode email").lean(),
+    AttendanceSession.aggregate([
+      { $match: { attendanceDayId: { $in: dayIds }, checkOutAt: { $ne: null } } },
+      { $group: { _id: "$attendanceDayId", count: { $sum: 1 } } },
+    ]),
   ]);
+  const userMap = new Map(users.map((u: { _id: unknown; fullName: string; employeeCode?: string; email: string }) => [String(u._id), u]));
   const countMap = new Map(counts.map((c: { _id: unknown; count: number }) => [String(c._id), c.count]));
 
   const rows = days.map((d: { _id: unknown; employeeId: unknown }) => {

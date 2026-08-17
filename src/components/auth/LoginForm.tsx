@@ -44,7 +44,7 @@ function LoginFormInner() {
   }
 
   return (
-    <Card className="w-full max-w-md">
+    <Card className="w-full max-w-md shadow-lg shadow-black/5">
       <CardHeader>
         <CardTitle>Sign in</CardTitle>
         <CardDescription>Enter your email and password to continue.</CardDescription>

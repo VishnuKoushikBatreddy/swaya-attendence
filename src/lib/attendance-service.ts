@@ -423,9 +423,19 @@ export async function processGeofenceExit(opts: {
   const at = opts.capturedAt ? new Date(opts.capturedAt) : new Date();
   // Automatic OS-detected exit — no schedule gate (mirrors the sustained-absence
   // and end-of-shift auto-closes, which also bypass the manual gate).
+  //
+  // `checkInAt <= at` is a REPLAY GUARD. The native receiver queues events that
+  // failed to upload, so an EXIT can arrive long after it happened; without this
+  // it would close whichever session is open *now*, even one that began after
+  // the employee had already left and come back. That case (leave 09:00 offline
+  // -> return and check in 10:00 -> queued EXIT flushes 10:05) would close the
+  // 10:00 session back-dated to 09:00, which clampCheckOut pins to the check-in
+  // instant: a zero-length session and an employee silently checked out again.
+  // A stale exit that matches nothing is simply dropped.
   const session = await AttendanceSession.findOne({
     employeeId: new Types.ObjectId(opts.employeeId),
     status: { $in: ["active", "flagged"] },
+    checkInAt: { $lte: at },
   }).sort({ checkInAt: -1 });
   if (!session) return { ok: false as const, reason: "no_active_session" };
   const { day } = await finalizeSession({
@@ -460,6 +470,24 @@ export async function processGeofenceEnter(opts: {
     .select("_id")
     .lean();
   if (existing) return { ok: true as const, alreadyActive: true };
+
+  // REPLAY GUARD, mirroring the one in processGeofenceExit. A queued ENTER can
+  // arrive after the employee has already worked and checked out — replaying it
+  // would open a SECOND session back-dated into that finished stretch, and
+  // computeDayTotals sums every session, so the day's work time would be counted
+  // twice. Skip when any session already starts at/after this instant, or was
+  // still running at it. For a live event (at ≈ now) neither can match, so this
+  // only ever suppresses genuinely stale replays.
+  if (opts.capturedAt) {
+    const at = new Date(opts.capturedAt);
+    const superseded = await AttendanceSession.findOne({
+      employeeId: new Types.ObjectId(opts.employeeId),
+      $or: [{ checkInAt: { $gte: at } }, { checkOutAt: { $gte: at } }],
+    })
+      .select("_id")
+      .lean();
+    if (superseded) return { ok: true as const, superseded: true };
+  }
 
   const timezone = await getCompanyTimezone(opts.companyId);
   return processCheckIn({
@@ -747,6 +775,48 @@ async function getShiftEnd(session: any): Promise<Date | null> {
   return new Date(schedule.expectedEndAt);
 }
 
+/**
+ * Batched form of getShiftEnd for the cron sweep: resolves the scheduled shift
+ * end for MANY sessions in two queries instead of two per session. Returns a map
+ * keyed by session id; a missing/non-working/open-ended schedule maps to null,
+ * exactly as getShiftEnd returns null for the same cases.
+ */
+async function getShiftEndsForSessions(sessions: any[]): Promise<Map<string, Date | null>> {
+  const result = new Map<string, Date | null>(
+    sessions.map((s) => [String(s._id), null])
+  );
+  if (sessions.length === 0) return result;
+
+  const days = await AttendanceDay.find({
+    _id: { $in: sessions.map((s) => s.attendanceDayId) },
+  })
+    .select("_id workDate")
+    .lean();
+  const workDateByDayId = new Map(days.map((d: any) => [String(d._id), d.workDate]));
+
+  // Fetch by the two key components and then match exact (employeeId, workDate)
+  // pairs in memory. This can over-fetch slightly versus an $or of exact pairs,
+  // but it is one indexed query rather than one round-trip per session.
+  const schedules = await EmployeeSchedule.find({
+    employeeId: { $in: sessions.map((s) => s.employeeId) },
+    workDate: { $in: Array.from(new Set(workDateByDayId.values())) },
+  })
+    .select("employeeId workDate isWorkingDay expectedEndAt")
+    .lean();
+  const scheduleByPair = new Map<string, any>(
+    schedules.map((s: any) => [`${String(s.employeeId)}|${s.workDate}`, s])
+  );
+
+  for (const session of sessions) {
+    const workDate = workDateByDayId.get(String(session.attendanceDayId));
+    if (!workDate) continue; // no AttendanceDay -> null, same as getShiftEnd
+    const schedule = scheduleByPair.get(`${String(session.employeeId)}|${workDate}`);
+    if (!schedule || !schedule.isWorkingDay || !schedule.expectedEndAt) continue;
+    result.set(String(session._id), new Date(schedule.expectedEndAt));
+  }
+  return result;
+}
+
 /** Close one session at its scheduled shift end, storing cumulative day totals. */
 async function closeSessionAtShiftEnd(session: any, shiftEnd: Date) {
   const lastPing = await LocationPing.findOne({ sessionId: session._id })
@@ -776,10 +846,18 @@ export async function autoCloseEndedShifts(): Promise<number> {
   const sessions = await AttendanceSession.find({
     status: { $in: ["active", "flagged"] },
   }).sort({ checkInAt: 1 });
+
+  // Resolve every session's shift end up front (2 queries total). Previously this
+  // was 2 queries per session inside the loop, so a company with N open sessions
+  // paid 2N sequential round-trips just to decide which ones to close.
+  const shiftEnds = await getShiftEndsForSessions(sessions);
+
   let closed = 0;
   for (const session of sessions) {
-    const shiftEnd = await getShiftEnd(session);
+    const shiftEnd = shiftEnds.get(String(session._id));
     if (shiftEnd && Date.now() > shiftEnd.getTime()) {
+      // Closing stays sequential: each close recomputes day totals and writes,
+      // and concurrent closes on the same day would race on those rollups.
       await closeSessionAtShiftEnd(session, shiftEnd);
       closed++;
     }

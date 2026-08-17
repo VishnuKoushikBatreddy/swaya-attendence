@@ -12,10 +12,6 @@ import com.google.android.gms.location.GeofencingEvent;
 
 import org.json.JSONObject;
 
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
@@ -23,9 +19,16 @@ import java.util.TimeZone;
 
 /**
  * Receives OS geofence ENTER/EXIT transitions — fires even when the app is killed
- * or after reboot — and POSTs them to /api/geofence-event using the native token
- * stored by the web app (@capacitor/preferences -> "CapacitorStorage"). No
+ * or after reboot — and delivers them to /api/geofence-event using the native
+ * token stored by the web app (@capacitor/preferences -> "CapacitorStorage"). No
  * WebView/JavaScript is involved.
+ *
+ * Every transition is PERSISTED FIRST and only then uploaded. Previously the POST
+ * was attempted inline and a failure was merely logged, so a transition that
+ * happened with no connectivity — the exact case this receiver exists for — was
+ * lost permanently. Now an offline EXIT/ENTER pair survives and is replayed, in
+ * order, once the network returns; the server applies each at its own capturedAt,
+ * so the resulting check-in/out times are the real ones.
  */
 public class GeofenceBroadcastReceiver extends BroadcastReceiver {
     private static final String TAG = "GeofenceReceiver";
@@ -55,41 +58,61 @@ public class GeofenceBroadcastReceiver extends BroadcastReceiver {
         SharedPreferences prefs =
             context.getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE);
         final String token = prefs.getString("geofence_token", null);
-        final String baseUrl = prefs.getString("geofence_url", null);
-        if (token == null || baseUrl == null) {
-            Log.w(TAG, "no token/url stored — skipping geofence post");
+        if (token == null || prefs.getString("geofence_url", null) == null) {
+            // Signed out — the transition can't be attributed to anyone, so
+            // there is nothing worth persisting.
+            Log.w(TAG, "no token/url stored — skipping geofence event");
+            return;
+        }
+
+        final Context appContext = context.getApplicationContext();
+
+        // Persist BEFORE any network attempt. If the process dies mid-upload, or
+        // there is no connectivity at all, the event is still on disk.
+        try {
+            // Named `queued` rather than `event`: `event` is already the
+            // GeofencingEvent this method started from.
+            JSONObject queued = new JSONObject();
+            queued.put("transition", transitionName);
+            queued.put("lat", lat);
+            queued.put("lng", lng);
+            queued.put("accuracy", accuracy);
+            queued.put("capturedAt", isoNow()); // when it HAPPENED, not when it uploads
+            queued.put("enqueuedAt", System.currentTimeMillis());
+            // Bind the event to whoever was signed in AT THE TIME. Uploading with
+            // whatever token happens to be current at flush time would file this
+            // movement under a different employee if someone else signs in on the
+            // device first. Native tokens last 30 days, comfortably longer than
+            // the queue's 24h lifetime, so this costs nothing in practice.
+            queued.put("token", token);
+            int depth = GeofenceEventQueue.add(appContext, queued);
+            Log.d(TAG, "queued " + transitionName + " (depth " + depth + ")");
+        } catch (Exception e) {
+            Log.e(TAG, "failed to queue geofence event", e);
             return;
         }
 
         // Network I/O must not run on the main thread; keep the broadcast alive.
         final PendingResult pending = goAsync();
         new Thread(() -> {
-            HttpURLConnection conn = null;
             try {
-                JSONObject body = new JSONObject();
-                body.put("token", token);
-                body.put("transition", transitionName);
-                body.put("lat", lat);
-                body.put("lng", lng);
-                body.put("accuracy", accuracy);
-                body.put("capturedAt", isoNow());
-
-                URL url = new URL(baseUrl + "/api/geofence-event");
-                conn = (HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("POST");
-                conn.setRequestProperty("Content-Type", "application/json");
-                conn.setConnectTimeout(15000);
-                conn.setReadTimeout(15000);
-                conn.setDoOutput(true);
-                try (OutputStream os = conn.getOutputStream()) {
-                    os.write(body.toString().getBytes(StandardCharsets.UTF_8));
+                // Drains the whole queue oldest-first, so a previously stranded
+                // EXIT is delivered before the ENTER that followed it.
+                boolean drained = GeofenceUploader.flush(appContext);
+                if (!drained) {
+                    // Still offline (or the server is failing) — hand off to
+                    // WorkManager, which survives the process and a reboot.
+                    GeofenceUploadWorker.schedule(appContext);
                 }
-                int code = conn.getResponseCode();
-                Log.d(TAG, "geofence-event " + transitionName + " -> HTTP " + code);
             } catch (Exception e) {
-                Log.e(TAG, "geofence post failed", e);
+                Log.e(TAG, "flush failed; scheduling retry", e);
+                try {
+                    GeofenceUploadWorker.schedule(appContext);
+                } catch (Exception ignored) {
+                    // WorkManager unavailable — the event stays queued for the
+                    // next transition or boot to pick up.
+                }
             } finally {
-                if (conn != null) conn.disconnect();
                 pending.finish();
             }
         }).start();

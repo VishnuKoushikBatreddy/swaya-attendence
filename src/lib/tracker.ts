@@ -30,6 +30,32 @@ type PingPayload = {
 const DEFAULT_DEVICE_ID = 'web';
 const APP_VERSION = '1.0.0';
 
+/**
+ * Web ping cadence.
+ *
+ * Mirrors the PING_INTERVAL_MS default in src/lib/env.ts. The server sends the
+ * configured value down on /api/attendance/today; this is the fallback used
+ * before that arrives (or if the request fails), so the two must stay in step.
+ *
+ * NOTE: this governs the WEB tracker only. The native Android watcher is
+ * distance-triggered (distanceFilter below), not time-triggered — the plugin
+ * exposes no interval knob — so PING_INTERVAL_MS does not apply there.
+ */
+const DEFAULT_PING_INTERVAL_MS = 180_000;
+
+// Guard rails against a misconfigured env var: sub-second polling would hammer
+// the battery and the API, and an absurdly long one would silently disable
+// tracking. Values outside this range are clamped, not rejected.
+const MIN_PING_INTERVAL_MS = 5_000;
+const MAX_PING_INTERVAL_MS = 30 * 60_000;
+
+function resolveIntervalMs(requested: number | undefined): number {
+  if (requested == null || !Number.isFinite(requested) || requested <= 0) {
+    return DEFAULT_PING_INTERVAL_MS;
+  }
+  return Math.min(MAX_PING_INTERVAL_MS, Math.max(MIN_PING_INTERVAL_MS, Math.floor(requested)));
+}
+
 let nativeWatcherId: string | null = null;
 let webInterval: ReturnType<typeof setInterval> | null = null;
 let webFirstTick: ReturnType<typeof setTimeout> | null = null;
@@ -49,9 +75,11 @@ export async function startTracker(opts: {
   if (!opts.active) return;
   onAutoCheckoutCb = opts.onAutoCheckout ?? null;
   const deviceId = opts.deviceId ?? DEFAULT_DEVICE_ID;
-  const intervalMs = opts.intervalMs ?? 15_000;
+  const intervalMs = resolveIntervalMs(opts.intervalMs);
 
   if (isNative()) {
+    // intervalMs is deliberately not forwarded — the native watcher fires on
+    // movement (distanceFilter), so there is no interval to set.
     return startNative({ deviceId, onError: opts.onError });
   }
   return startWeb({ deviceId, intervalMs });
@@ -150,6 +178,35 @@ async function loadBackgroundGeolocation() {
   return { BackgroundGeolocation };
 }
 
+/**
+ * The service-worker registration used to queue pings that failed to send.
+ *
+ * Deliberately a function rather than a module-level promise: building a
+ * rejected promise eagerly produces an unhandled rejection whenever no ping
+ * happens to fail, since nothing is awaiting it.
+ *
+ * Tests the VALUE, not just the key — in an insecure context some browsers
+ * expose `navigator.serviceWorker` as undefined while `'serviceWorker' in
+ * navigator` is still true, and reading `.ready` off that throws. The queue is
+ * only a fallback, so its absence must never stop pings from being sent.
+ */
+async function swRegistration(): Promise<ServiceWorkerRegistration> {
+  if (typeof navigator === 'undefined' || !navigator.serviceWorker) {
+    throw new Error('no service worker');
+  }
+  return navigator.serviceWorker.ready;
+}
+
+/** Hand a failed ping to the service worker's retry queue. Best-effort. */
+async function queuePing(payload: PingPayload) {
+  try {
+    const reg = await swRegistration();
+    reg.active?.postMessage({ type: 'enqueue-ping', ping: payload });
+  } catch {
+    // No service worker (or it never activated) — the ping is dropped.
+  }
+}
+
 async function postPing(payload: PingPayload) {
   try {
     const res = await fetch('/api/pings', {
@@ -166,27 +223,11 @@ async function postPing(payload: PingPayload) {
       }
       return;
     }
-    {
-      // Native fallback: queue via service worker if registered
-      if ('serviceWorker' in navigator) {
-        try {
-          const reg = await navigator.serviceWorker.ready;
-          reg.active?.postMessage({ type: 'enqueue-ping', ping: payload });
-        } catch {
-          // ignore
-        }
-      }
-    }
+    // Server rejected it (5xx, offline shim, etc.) — hand it to the retry queue.
+    await queuePing(payload);
   } catch {
-    // network down — leave the ping in the SW queue
-    if ('serviceWorker' in navigator) {
-      try {
-        const reg = await navigator.serviceWorker.ready;
-        reg.active?.postMessage({ type: 'enqueue-ping', ping: payload });
-      } catch {
-        // ignore
-      }
-    }
+    // Network down — same fallback.
+    await queuePing(payload);
   }
 }
 
@@ -195,10 +236,6 @@ async function postPing(payload: PingPayload) {
 async function startWeb(opts: { deviceId: string; intervalMs: number }) {
   if (webInterval) return;
 
-  const swReady =
-    'serviceWorker' in navigator
-      ? navigator.serviceWorker.ready
-      : Promise.reject(new Error('no sw'));
 
   async function sendPing(coords: { lat: number; lng: number; accuracy?: number }) {
     const capturedAt = new Date().toISOString();
@@ -233,12 +270,7 @@ async function startWeb(opts: { deviceId: string; intervalMs: number }) {
         void notifyCheckedOut();
       }
     } catch {
-      try {
-        const reg = await swReady;
-        reg.active?.postMessage({ type: 'enqueue-ping', ping: payload });
-      } catch {
-        // last resort: drop the ping
-      }
+      await queuePing(payload);
     }
   }
 

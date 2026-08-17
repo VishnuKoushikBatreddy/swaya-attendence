@@ -4,7 +4,6 @@
 import { NextRequest } from "next/server";
 import { Types } from "mongoose";
 import bcrypt from "bcryptjs";
-import { connectDB } from "@/lib/db";
 import { User, EmployeeSiteAssignment, WorkSite } from "@/models";
 import { requireRole, ok, withApi, fail } from "@/lib/api-helpers";
 import { EmployeeCreateSchema } from "@/lib/validators";

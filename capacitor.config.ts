@@ -14,7 +14,12 @@ import type { CapacitorConfig } from '@capacitor/cli';
 const config: CapacitorConfig = {
   appId: 'com.swaya.attendance',
   appName: 'Swaya Attendance',
-  webDir: '.next',
+  // A placeholder web root, NOT the app. Because `server.url` below points the
+  // WebView at the deployed site, nothing in webDir is ever loaded — but
+  // Capacitor still requires the directory to exist and `cap sync` copies all of
+  // it into the APK. Pointing this at '.next' bundled the entire Next.js build
+  // directory, and .next/cache alone accounted for 110 MB of a 117 MB APK.
+  webDir: 'native-shell',
   // Load the live Vercel deployment instead of bundled static files.
   server: {
     url: 'https://swaya-attendence-f59x.vercel.app',

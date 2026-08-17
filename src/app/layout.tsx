@@ -21,7 +21,8 @@ export const viewport: Viewport = {
   initialScale: 1,
   maximumScale: 1,
   userScalable: false,
-  themeColor: "#3b82f6",
+  // Matches --primary (hsl(245 58% 51%)) so the Android status bar tracks the theme.
+  themeColor: "#463acb",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

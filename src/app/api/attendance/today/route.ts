@@ -4,6 +4,7 @@ import { requireAuth, ok, withApi } from "@/lib/api-helpers";
 import { liveTotalsForActiveSession } from "@/lib/attendance-service";
 import { getCompanyTimezone } from "@/lib/company";
 import { todayWorkDate } from "@/lib/workdate";
+import { env } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
 
@@ -49,5 +50,19 @@ export const GET = withApi(async (_req: NextRequest) => {
   // work/outside time changing while checked in.
   const dayOut = live && day ? { ...day, ...live } : day;
 
-  return ok({ day: dayOut, sessions, site: displaySite, schedule, shift, leave });
+  // PING_INTERVAL_MS is a server-side env var, but the tracker that needs it runs
+  // in the browser. Shipping it on this payload (which the employee page already
+  // polls) keeps it runtime-configurable — change it on the host and every client
+  // picks it up on the next poll, with no rebuild. A NEXT_PUBLIC_ var would be
+  // baked in at build time instead, which the Capacitor WebView shell can't
+  // refresh without a redeploy.
+  return ok({
+    day: dayOut,
+    sessions,
+    site: displaySite,
+    schedule,
+    shift,
+    leave,
+    pingIntervalMs: env.PING_INTERVAL_MS,
+  });
 });

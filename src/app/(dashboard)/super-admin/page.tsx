@@ -22,7 +22,7 @@ export default function SuperAdminOverview() {
 
   const cards = [
     { title: "Total companies", value: stats?.companies, icon: Building, color: "text-blue-600" },
-    { title: "Active companies", value: stats?.active, icon: CheckCircle2, color: "text-emerald-600" },
+    { title: "Active companies", value: stats?.active, icon: CheckCircle2, color: "text-success" },
     { title: "Total users", value: stats?.users, icon: Users, color: "text-indigo-600" },
   ];
 

@@ -4,85 +4,30 @@
  * MobileNav — hamburger drawer for phone-width viewports.
  *
  * Hidden on md+ breakpoints where the desktop Sidebar takes over. The drawer
- * uses Radix Dialog (already in package.json) and renders the same nav items
- * as Sidebar.tsx — kept in sync by reading the same role → nav map.
+ * uses Radix Dialog (already in package.json) and renders the same nav items as
+ * Sidebar.tsx — both import them from ./nav-items, so the two menus cannot drift.
  *
  * Place it once at the top of the dashboard layout alongside <Sidebar>.
- * The hamburger trigger is rendered into the topbar via a portal-free flex
- * layout: the trigger floats on the left edge of the viewport so it works
+ * The hamburger trigger floats on the left edge of the viewport so it works
  * regardless of where the topbar lives in the DOM.
  */
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { signOut, useSession } from "next-auth/react";
-import {
-  LayoutDashboard,
-  MapPin,
-  Users as UsersIcon,
-  Clock,
-  Calendar,
-  ClipboardList,
-  FileText,
-  LogOut,
-  Settings,
-  Building,
-  Plane,
-  Menu,
-} from "lucide-react";
+import { LogOut, Menu, MapPin } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogTitle,
-} from "@/components/ui/dialog";
-
-const empNav = [
-  { href: "/employee", label: "Today's check-in", icon: Clock },
-  { href: "/employee/history", label: "History", icon: Calendar },
-  { href: "/employee/leave", label: "Leave", icon: Plane },
-  { href: "/employee/regularization", label: "Regularization", icon: ClipboardList },
-  { href: "/employee/sites", label: "My sites", icon: MapPin },
-];
-
-const mgrNav = [
-  { href: "/manager", label: "Team", icon: UsersIcon },
-  { href: "/manager/approvals", label: "Approvals", icon: ClipboardList },
-  { href: "/manager/reports", label: "Reports", icon: FileText },
-];
-
-const adminNav = [
-  { href: "/admin", label: "Overview", icon: LayoutDashboard },
-  { href: "/admin/sites", label: "Sites", icon: MapPin },
-  { href: "/admin/employees", label: "Employees", icon: UsersIcon },
-  { href: "/admin/shifts", label: "Shifts", icon: Clock },
-  { href: "/admin/schedules", label: "Schedules", icon: Calendar },
-  { href: "/admin/holidays", label: "Holidays", icon: FileText },
-  { href: "/admin/approvals", label: "Approvals", icon: ClipboardList },
-  { href: "/admin/reports", label: "Reports", icon: FileText },
-  { href: "/admin/audit", label: "Audit", icon: Settings },
-];
-
-const superNav = [
-  { href: "/super-admin", label: "Overview", icon: LayoutDashboard },
-  { href: "/super-admin/companies", label: "Companies", icon: Building },
-  { href: "/super-admin/users", label: "Users", icon: UsersIcon },
-];
-
-function getNav(role: string) {
-  if (role === "super_admin") return superNav;
-  if (role === "admin") return adminNav;
-  if (role === "manager") return mgrNav;
-  return empNav;
-}
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { getNav, activeHref } from "./nav-items";
 
 export function MobileNav({ role }: { role: string }) {
   const pathname = usePathname();
   const { data: session } = useSession();
   const [open, setOpen] = useState(false);
   const nav = getNav(role);
+  const active = activeHref(nav, pathname);
 
   // Close the drawer whenever the user navigates so it doesn't stay open
   // over a different page.
@@ -97,7 +42,7 @@ export function MobileNav({ role }: { role: string }) {
         type="button"
         variant="ghost"
         size="icon"
-        className="fixed left-2 top-2 z-40 h-10 w-10 md:hidden"
+        className="fixed left-2 top-3 z-40 h-10 w-10 md:hidden"
         onClick={() => setOpen(true)}
         aria-label="Open menu"
       >
@@ -107,41 +52,60 @@ export function MobileNav({ role }: { role: string }) {
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent
           aria-describedby={undefined}
-          className="left-0 top-0 block h-screen max-h-screen w-72 max-w-[85vw] translate-x-0 translate-y-0 gap-0 rounded-none p-0 data-[state=open]:slide-in-from-left data-[state=closed]:slide-out-to-left"
+          className="left-0 top-0 flex h-screen max-h-screen w-72 max-w-[85vw] translate-x-0 translate-y-0 flex-col gap-0 rounded-none p-0 data-[state=open]:slide-in-from-left data-[state=closed]:slide-out-to-left"
         >
           <DialogTitle className="sr-only">Navigation</DialogTitle>
-          <div className="flex h-14 items-center border-b px-4 font-semibold">
-            Geo Attendance
+
+          <div className="flex h-16 flex-shrink-0 items-center gap-2.5 border-b px-5">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+              <MapPin className="h-4 w-4" />
+            </span>
+            <span className="text-sm font-semibold tracking-tight">Geo Attendance</span>
           </div>
-          <nav className="space-y-1 p-2">
+
+          {/* flex-1 + overflow keeps long menus scrollable instead of running
+              underneath the account block, which was absolutely positioned. */}
+          <nav className="flex-1 space-y-0.5 overflow-y-auto p-3">
             {nav.map((item) => {
-              const isActive =
-                pathname === item.href ||
-                (item.href !== "/" && pathname.startsWith(item.href));
+              const isActive = item.href === active;
               const Icon = item.icon;
               return (
                 <Link
                   key={item.href}
                   href={item.href}
+                  aria-current={isActive ? "page" : undefined}
                   className={cn(
-                    "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                    "group relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
                     isActive
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                      ? "bg-accent text-accent-foreground"
+                      : "text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground"
                   )}
                 >
-                  <Icon className="h-4 w-4" />
-                  {item.label}
+                  <span
+                    className={cn(
+                      "absolute left-0 top-1/2 h-5 w-1 -translate-y-1/2 rounded-r-full bg-primary transition-opacity",
+                      isActive ? "opacity-100" : "opacity-0"
+                    )}
+                  />
+                  <Icon
+                    className={cn(
+                      "h-4 w-4 flex-shrink-0",
+                      isActive ? "text-primary" : "text-muted-foreground"
+                    )}
+                  />
+                  <span className="truncate">{item.label}</span>
                 </Link>
               );
             })}
           </nav>
-          <div className="absolute inset-x-0 bottom-0 border-t p-2">
-            <div className="px-3 pb-2 text-xs text-muted-foreground truncate">
+
+          <div className="flex-shrink-0 border-t p-3">
+            <div className="truncate px-2 pb-2 text-xs text-muted-foreground">
               {session?.user?.email}
             </div>
             <Button
               variant="ghost"
+              size="sm"
               className="w-full justify-start text-muted-foreground hover:text-foreground"
               onClick={() => signOut({ callbackUrl: "/login" })}
             >

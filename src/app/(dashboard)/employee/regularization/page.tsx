@@ -162,10 +162,10 @@ export default function RegularizationPage() {
                   <span
                     className={
                       r.status === "pending"
-                        ? "text-amber-600"
+                        ? "text-warning"
                         : r.status === "approved"
-                        ? "text-emerald-600"
-                        : "text-red-600"
+                        ? "text-success"
+                        : "text-destructive"
                     }
                   >
                     {r.status}
