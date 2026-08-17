@@ -255,6 +255,37 @@ export function isPingGapCheckout(
 }
 
 /**
+ * Whether a ping gap should actually end the session.
+ *
+ * The gap rule closes at the LAST ping, i.e. the last moment we can prove the
+ * employee was present. That is sound — unless the only ping on record is the
+ * one written at check-in, in which case "the last proven moment" IS the
+ * check-in instant and closing there produces a ZERO-LENGTH session: check-in
+ * and check-out identical, the whole shift erased.
+ *
+ * That is reachable in normal use. The native watcher is distance-triggered, so
+ * an employee sitting at a desk emits no pings at all; when they finally move,
+ * the gap fires and silently ends a shift they never left.
+ *
+ * With no tracking data beyond check-in there is nothing to close *to*, so the
+ * gap rule stands down and the session is left to the mechanisms that do have
+ * evidence: a geofence EXIT, sustained absence, the scheduled shift end, or a
+ * manual check-out.
+ */
+export function shouldGapCheckout(opts: {
+  checkInMs: number;
+  lastPingMs: number;
+  nextPingMs: number;
+  gapThresholdMs: number;
+}): boolean {
+  if (!isPingGapCheckout(opts.lastPingMs, opts.nextPingMs, opts.gapThresholdMs)) {
+    return false;
+  }
+  // Only close when there is at least one ping AFTER check-in to close at.
+  return opts.lastPingMs > opts.checkInMs;
+}
+
+/**
  * Decide whether a day's "outside" time should count against the employee.
  *
  * Outside minutes only matter when the employee actually CHECKED OUT and left the

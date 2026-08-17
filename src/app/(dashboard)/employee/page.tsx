@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge, badgeVariants } from "@/components/ui/badge";
 import { toast } from "@/components/ui/toaster";
-import { formatDuration, formatTime } from "@/lib/utils";
+import { formatDuration, formatTime, formatTimeWithSeconds } from "@/lib/utils";
 import dynamic from "next/dynamic";
 import { LocationTracker } from "@/components/geo/LocationTracker";
 import { getDeviceId } from "@/lib/device";
@@ -486,9 +486,23 @@ export default function EmployeePage() {
               lead and the captions sit above them in small caps. */}
           {currentSession && (
             <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border bg-border">
-              <Stat label="Check-in" value={formatTime(currentSession.checkInAt)} />
+              {/* FIRST check-in and LATEST check-out of the day. Both read from
+                  the day rollup, which the server maintains as a true min/max —
+                  sourcing check-in from sessions[0] relied on array ordering and
+                  would drift once a day had several sessions. Seconds are shown
+                  because at minute precision a short session rendered the two
+                  times identically. */}
+              <Stat
+                label="Check-in"
+                value={formatTimeWithSeconds(
+                  today?.day?.firstCheckInAt ?? currentSession.checkInAt
+                )}
+              />
               {today?.day?.lastCheckOutAt && (
-                <Stat label="Check-out" value={formatTime(today.day.lastCheckOutAt)} />
+                <Stat
+                  label="Check-out"
+                  value={formatTimeWithSeconds(today.day.lastCheckOutAt)}
+                />
               )}
               <Stat
                 label="Work time"

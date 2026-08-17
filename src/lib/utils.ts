@@ -25,6 +25,25 @@ export function formatTime(d: Date | string | null | undefined): string {
   });
 }
 
+/**
+ * Same as formatTime but to the second.
+ *
+ * Used for today's check-in / check-out readouts. At minute precision a genuine
+ * gap can render as two identical strings — a session from 11:29:08 to 11:29:44
+ * showed "11:29" twice, which reads as a bug even though the stored times were
+ * a correct 36 seconds apart. Reports and history keep minute precision, where
+ * seconds would only add noise.
+ */
+export function formatTimeWithSeconds(d: Date | string | null | undefined): string {
+  if (!d) return "—";
+  const date = typeof d === "string" ? new Date(d) : d;
+  return date.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 export function formatDate(d: Date | string | null | undefined): string {
   if (!d) return "—";
   const date = typeof d === "string" ? new Date(d) : d;

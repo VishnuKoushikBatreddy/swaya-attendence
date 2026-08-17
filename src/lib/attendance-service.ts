@@ -28,7 +28,7 @@ import {
   clampCheckOut,
   classifyOutsideForDay,
   resolveAutoCheckout,
-  isPingGapCheckout,
+  shouldGapCheckout,
   deriveCheckoutSource,
 } from "./attendance-logic";
 import {
@@ -302,8 +302,11 @@ export async function processCheckIn(input: CheckInInput): Promise<CheckInResult
     distanceFromSiteMeters: found.distance,
   });
 
-  // Update day
-  day.firstCheckInAt = day.firstCheckInAt ?? at;
+  // Update day. EARLIEST check-in of the day: an offline check-in syncing later
+  // carries its original (earlier) capturedAt, so take the minimum rather than
+  // only setting this when empty.
+  const previousCheckIn = day.firstCheckInAt ? new Date(day.firstCheckInAt).getTime() : Infinity;
+  if (at.getTime() < previousCheckIn) day.firstCheckInAt = at;
   if (schedule) {
     day.scheduleId = schedule._id;
     const graceMin = schedule.expectedStartAt
@@ -660,7 +663,14 @@ async function finalizeSession(opts: {
 
   const day = await AttendanceDay.findById(session.attendanceDayId);
   if (day) {
-    day.lastCheckOutAt = session.checkOutAt;
+    // LATEST check-out of the day, never just "the most recently written one".
+    // Sessions are not always finalized in chronological order — a replayed
+    // geofence EXIT, the cron sweep and a manual check-out can close sessions in
+    // any sequence — so assigning unconditionally let this value move backwards.
+    const previousCheckOut = day.lastCheckOutAt ? new Date(day.lastCheckOutAt).getTime() : 0;
+    if (new Date(session.checkOutAt).getTime() >= previousCheckOut) {
+      day.lastCheckOutAt = session.checkOutAt;
+    }
     day.totalWorkSeconds = totals.totalWorkSeconds;
     day.totalInsideSeconds = totals.totalInsideSeconds;
     day.totalOutsideSeconds = totals.totalOutsideSeconds;
@@ -995,7 +1005,14 @@ export async function processPings(opts: {
   if (env.PING_GAP_CHECKOUT_ENABLED && lastPing && sorted.length) {
     const lastPingMs = new Date(lastPing.capturedAt).getTime();
     const nextMs = sorted[0].capturedAt ? new Date(sorted[0].capturedAt).getTime() : Date.now();
-    if (isPingGapCheckout(lastPingMs, nextMs, env.PING_GAP_CHECKOUT_MINUTES * 60_000)) {
+    if (
+      shouldGapCheckout({
+        checkInMs: new Date(session.checkInAt).getTime(),
+        lastPingMs,
+        nextPingMs: nextMs,
+        gapThresholdMs: env.PING_GAP_CHECKOUT_MINUTES * 60_000,
+      })
+    ) {
       await finalizeSession({
         session,
         lat: lastPing.location.coordinates[1],
