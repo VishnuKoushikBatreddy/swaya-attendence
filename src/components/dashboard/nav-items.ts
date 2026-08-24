@@ -16,6 +16,7 @@ import {
   Settings,
   Building,
   Plane,
+  Activity,
   type LucideIcon,
 } from "lucide-react";
 
@@ -37,6 +38,7 @@ const mgrNav: NavItem[] = [
 
 const adminNav: NavItem[] = [
   { href: "/admin", label: "Overview", icon: LayoutDashboard },
+  { href: "/admin/live", label: "Live status", icon: Activity },
   { href: "/admin/sites", label: "Sites", icon: MapPin },
   { href: "/admin/employees", label: "Employees", icon: UsersIcon },
   { href: "/admin/shifts", label: "Shifts", icon: Clock },
