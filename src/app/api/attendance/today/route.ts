@@ -64,5 +64,12 @@ export const GET = withApi(async (_req: NextRequest) => {
     shift,
     leave,
     pingIntervalMs: env.PING_INTERVAL_MS,
+    // Auto check-in config, delivered rather than bundled so it can be turned
+    // off server-side without redeploying the client.
+    autoCheckIn: {
+      enabled: env.AUTO_CHECKIN_ENABLED,
+      pollMs: env.AUTO_CHECKIN_POLL_MS,
+      graceMinutes: shift?.graceMinutes ?? 0,
+    },
   });
 });

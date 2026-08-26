@@ -97,6 +97,14 @@ export const env = {
   // tolerance and simply forgives proportionally more misses.
   PING_GAP_CHECKOUT_ENABLED: bool("PING_GAP_CHECKOUT_ENABLED", true),
   PING_GAP_CHECKOUT_MINUTES: num("PING_GAP_CHECKOUT_MINUTES", 15),
+  // Auto check-in: while an employee is inside their site's geofence during
+  // scheduled hours and not yet checked in, the app checks them in without a tap.
+  // Off switch is server-side and delivered on /api/attendance/today, so it can
+  // be disabled without a rebuild or a redeploy of the app shell.
+  AUTO_CHECKIN_ENABLED: bool("AUTO_CHECKIN_ENABLED", true),
+  // How often the client may re-evaluate its position for auto check-in. Each
+  // attempt costs a GPS fix, so this is deliberately slower than the ping rate.
+  AUTO_CHECKIN_POLL_MS: num("AUTO_CHECKIN_POLL_MS", 60_000),
   // How far back a native geofence event's own `capturedAt` may reach. The
   // Android receiver queues failed uploads and retries them, so a legitimate
   // event can arrive hours late and must still be applied at the time it

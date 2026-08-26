@@ -382,6 +382,74 @@ export function evaluateEventFreshness(
   return { ok: true };
 }
 
+// ---------------------------------------------------------------------------
+// Auto check-in eligibility (client-side gate before spending a GPS fix).
+// ---------------------------------------------------------------------------
+
+export const AUTO_CHECKIN_REASONS = {
+  DISABLED: "disabled",
+  ALREADY_CHECKED_IN: "already_checked_in",
+  NOT_REQUIRED: "not_required",
+  NO_SITE: "no_site",
+  NO_SCHEDULE: "no_schedule",
+  OUTSIDE_HOURS: "outside_hours",
+  MANUAL_CHECKOUT: "manual_checkout",
+} as const;
+
+/**
+ * Whether the app should try to check this employee in automatically.
+ *
+ * This answers "should we even look at the GPS", not "are they inside" — the
+ * caller does the distance test, and the server re-applies its own schedule gate
+ * regardless. Keeping it pure means the rules below are unit-tested rather than
+ * buried in a React effect.
+ *
+ * Two conditions are load-bearing:
+ *
+ * NO_SCHEDULE — without expectedStartAt/expectedEndAt there is no defined shift
+ * window. The server's gate treats "no schedule" as "no restriction", so
+ * auto-checking-in would mark someone present for merely walking past the site
+ * at any hour. Automatic check-in requires an explicit window; manual check-in
+ * is unaffected.
+ *
+ * MANUAL_CHECKOUT — if the employee checked themselves out, they meant it.
+ * Re-checking them in while they are still on site would make leaving early
+ * impossible. An AUTOMATIC close (geofence exit, sustained absence, shift end,
+ * ping gap) does not suppress: returning to site after one of those should check
+ * them back in, which is the whole point.
+ */
+export function evaluateAutoCheckIn(opts: {
+  enabled: boolean;
+  isCheckedIn: boolean;
+  noCheckInNeeded: boolean;
+  hasSite: boolean;
+  scheduleStartMs: number | null;
+  scheduleEndMs: number | null;
+  graceMinutes: number;
+  /** Status of the most recent session today: "completed" means manual. */
+  lastSessionStatus: string | null;
+  nowMs: number;
+}): { ok: true } | { ok: false; reason: string } {
+  const R = AUTO_CHECKIN_REASONS;
+  if (!opts.enabled) return { ok: false, reason: R.DISABLED };
+  if (opts.isCheckedIn) return { ok: false, reason: R.ALREADY_CHECKED_IN };
+  if (opts.noCheckInNeeded) return { ok: false, reason: R.NOT_REQUIRED };
+  if (!opts.hasSite) return { ok: false, reason: R.NO_SITE };
+  if (opts.lastSessionStatus === "completed") {
+    return { ok: false, reason: R.MANUAL_CHECKOUT };
+  }
+  if (opts.scheduleStartMs == null || opts.scheduleEndMs == null) {
+    return { ok: false, reason: R.NO_SCHEDULE };
+  }
+  // Same window the server enforces in evaluateScheduleGate, so the client never
+  // fires a request the server is going to reject.
+  const start = opts.scheduleStartMs - opts.graceMinutes * 60_000;
+  if (opts.nowMs < start || opts.nowMs > opts.scheduleEndMs) {
+    return { ok: false, reason: R.OUTSIDE_HOURS };
+  }
+  return { ok: true };
+}
+
 export function classifyOutsideForDay(opts: {
   totalOutsideSeconds: number;
   midDayCheckouts: number;

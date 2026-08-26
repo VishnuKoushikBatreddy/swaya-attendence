@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Badge, badgeVariants } from "@/components/ui/badge";
 import { toast } from "@/components/ui/toaster";
 import { formatDuration, formatTime, formatTimeWithSeconds } from "@/lib/utils";
+import { evaluateAutoCheckIn } from "@/lib/attendance-logic";
 import dynamic from "next/dynamic";
 import { LocationTracker } from "@/components/geo/LocationTracker";
 import { getDeviceId } from "@/lib/device";
@@ -85,6 +86,7 @@ type TodayState = {
   leave?: any;
   /** Server's PING_INTERVAL_MS — drives the web tracker's cadence. */
   pingIntervalMs?: number;
+  autoCheckIn?: { enabled: boolean; pollMs: number; graceMinutes: number };
 };
 
 export default function EmployeePage() {
@@ -353,13 +355,10 @@ export default function EmployeePage() {
     })();
   }, [isCheckedIn]);
 
-  // Native OS-geofence fallback (Android): register a geofence around the work
-  // site whenever the employee HAS a site for today — kept active whether checked
-  // in OR out, so the OS can fire BOTH the leave (EXIT -> auto check-out) and the
-  // return (ENTER -> auto check-in) even after the app is killed. Removed only on
-  // a day off / leave / no site. The server schedule-gate still guards check-ins.
-  // Depend on the primitive lat/lng/radius (not the object) so the 30s `today`
-  // poll doesn't needlessly re-register the geofence each time.
+  // Site geofence centre + radius as primitives. Both the auto check-in effect
+  // and the native-geofence effect depend on these; keeping them primitive (not
+  // the site object) stops the `today` poll from restarting either one on every
+  // refresh.
   const siteLat = Array.isArray(site?.location?.coordinates)
     ? (site.location.coordinates[1] as number)
     : null;
@@ -367,6 +366,112 @@ export default function EmployeePage() {
     ? (site.location.coordinates[0] as number)
     : null;
   const siteRadius = (site?.radiusMeters as number | undefined) ?? undefined;
+
+  // ── Auto check-in ────────────────────────────────────────────────────────
+  // Being inside the site during shift hours is a STATE, but the OS geofence
+  // only reports TRANSITIONS. Someone who arrives at 08:45 gets an ENTER that
+  // the schedule gate rejects for being early, then never crosses the boundary
+  // again — so without this they are never checked in at 09:00. This closes that
+  // gap, and works in the browser too, where no OS geofence exists at all.
+  //
+  // evaluateAutoCheckIn decides whether to spend a GPS fix at all; the distance
+  // test and the server's own schedule gate still apply after it.
+  const lastSession = today?.sessions?.length
+    ? today.sessions[today.sessions.length - 1]
+    : null;
+  const autoCheckInDecision = evaluateAutoCheckIn({
+    enabled: today?.autoCheckIn?.enabled ?? false,
+    isCheckedIn,
+    noCheckInNeeded,
+    hasSite: siteLat != null && siteLng != null,
+    scheduleStartMs: today?.schedule?.expectedStartAt
+      ? new Date(today.schedule.expectedStartAt).getTime()
+      : null,
+    scheduleEndMs: today?.schedule?.expectedEndAt
+      ? new Date(today.schedule.expectedEndAt).getTime()
+      : null,
+    graceMinutes: today?.autoCheckIn?.graceMinutes ?? 0,
+    lastSessionStatus: lastSession?.status ?? null,
+    nowMs: nowTs || Date.now(),
+  });
+  const autoCheckInEligible = autoCheckInDecision.ok;
+  const autoPollMs = today?.autoCheckIn?.pollMs ?? 60_000;
+
+  // Throttles attempts across effect restarts (the `today` poll re-renders often).
+  const lastAutoAttemptRef = useRef(0);
+  useEffect(() => {
+    if (!autoCheckInEligible || siteLat == null || siteLng == null) return;
+    let cancelled = false;
+
+    const attempt = async () => {
+      if (cancelled) return;
+      // Guard against a burst of attempts when dependencies churn.
+      if (Date.now() - lastAutoAttemptRef.current < autoPollMs) return;
+      lastAutoAttemptRef.current = Date.now();
+
+      let coords;
+      try {
+        coords = await getCurrentLocation();
+      } catch {
+        return; // permission denied or no fix — try again next tick
+      }
+      if (cancelled) return;
+      setLastLat(coords.latitude);
+      setLastLng(coords.longitude);
+
+      // Only spend a request when actually inside. Accuracy is added to the
+      // radius, matching the server's own tolerance.
+      const distance = haversineDistanceMeters(
+        { lat: coords.latitude, lng: coords.longitude },
+        { lat: siteLat, lng: siteLng }
+      );
+      if (distance > (siteRadius ?? 0) + (coords.accuracy ?? 0)) return;
+
+      try {
+        const res = await fetch("/api/attendance/check-in", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            lat: coords.latitude,
+            lng: coords.longitude,
+            accuracy: coords.accuracy,
+            isMockLocation: false,
+            deviceId: getDeviceId(),
+          }),
+        });
+        const json = await res.json();
+        if (cancelled) return;
+        if (json.ok) {
+          toast({
+            title: "Checked in automatically",
+            description: `You're at ${json.data.site.name}.`,
+          });
+          setTracking(true);
+          loadToday();
+        }
+        // A rejection (already checked in, outside hours, day off) needs no
+        // toast — this runs unattended, and the throttle prevents a retry storm.
+      } catch {
+        // Offline: do NOT queue. A queued auto check-in would replay at a time
+        // the employee never chose. Manual check-in still queues.
+      }
+    };
+
+    attempt();
+    const timer = setInterval(attempt, autoPollMs);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [autoCheckInEligible, siteLat, siteLng, siteRadius, autoPollMs, loadToday]);
+
+  // Native OS-geofence fallback (Android): register a geofence around the work
+  // site whenever the employee HAS a site for today — kept active whether checked
+  // in OR out, so the OS can fire BOTH the leave (EXIT -> auto check-out) and the
+  // return (ENTER -> auto check-in) even after the app is killed. Removed only on
+  // a day off / leave / no site. The server schedule-gate still guards check-ins.
+  // Depends on the primitive lat/lng/radius declared above (not the object) so
+  // the 30s `today` poll doesn't needlessly re-register the geofence each time.
   useEffect(() => {
     (async () => {
       try {
