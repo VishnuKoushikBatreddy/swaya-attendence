@@ -55,6 +55,19 @@ public class GeofenceBroadcastReceiver extends BroadcastReceiver {
         final double lng = loc != null ? loc.getLongitude() : 0;
         final float accuracy = loc != null ? loc.getAccuracy() : 0;
 
+        // WHEN THE CROSSING HAPPENED, not when this broadcast was delivered.
+        //
+        // Android does not deliver geofence transitions immediately: Doze and
+        // OEM battery managers routinely hold them, sometimes for a long time.
+        // Stamping the current wall clock therefore back-dated nothing and
+        // over-reported presence — an EXIT held for 20 minutes credited 20
+        // minutes of work the employee had not done, and a held ENTER could mark
+        // someone late for a shift they arrived on time for.
+        //
+        // The triggering Location carries the UTC time of the fix that actually
+        // crossed the boundary, which is the truth we want.
+        final String capturedAt = triggerTimeIso(loc);
+
         SharedPreferences prefs =
             context.getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE);
         final String token = prefs.getString("geofence_token", null);
@@ -77,7 +90,7 @@ public class GeofenceBroadcastReceiver extends BroadcastReceiver {
             queued.put("lat", lat);
             queued.put("lng", lng);
             queued.put("accuracy", accuracy);
-            queued.put("capturedAt", isoNow()); // when it HAPPENED, not when it uploads
+            queued.put("capturedAt", capturedAt); // the fix time of the crossing
             queued.put("enqueuedAt", System.currentTimeMillis());
             // Bind the event to whoever was signed in AT THE TIME. Uploading with
             // whatever token happens to be current at flush time would file this
@@ -116,6 +129,38 @@ public class GeofenceBroadcastReceiver extends BroadcastReceiver {
                 pending.finish();
             }
         }).start();
+    }
+
+    /**
+     * ISO-8601 UTC time of the fix that triggered the transition.
+     *
+     * Falls back to the current clock when the Location is missing or its
+     * timestamp is not credible: some devices report 0, and a fix from a device
+     * whose clock has since been corrected can land in the future or absurdly
+     * far in the past. A wrong-but-recent time is far less damaging than a
+     * wildly wrong one, and the server independently rejects anything outside
+     * its freshness window (GEOFENCE_MAX_EVENT_AGE_MINUTES).
+     */
+    private static String triggerTimeIso(Location loc) {
+        if (loc == null) return isoNow();
+        long fixMs = loc.getTime();
+        long nowMs = System.currentTimeMillis();
+        boolean credible =
+            fixMs > 0
+                && fixMs <= nowMs + 60_000L                 // not in the future
+                && nowMs - fixMs <= 24L * 60L * 60L * 1000L; // not older than a day
+        if (!credible) {
+            Log.w(TAG, "implausible fix time " + fixMs + " — falling back to now");
+            return isoNow();
+        }
+        return isoAt(fixMs);
+    }
+
+    private static String isoAt(long epochMs) {
+        SimpleDateFormat f =
+            new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
+        f.setTimeZone(TimeZone.getTimeZone("UTC"));
+        return f.format(new Date(epochMs));
     }
 
     private static String isoNow() {

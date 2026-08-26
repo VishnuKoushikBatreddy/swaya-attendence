@@ -26,6 +26,7 @@ import {
   evaluateScheduleGate,
   evaluateLateness,
   clampCheckOut,
+  clampEventTimeToNow,
   classifyOutsideForDay,
   resolveAutoCheckout,
   shouldGapCheckout,
@@ -423,7 +424,11 @@ export async function processGeofenceExit(opts: {
   capturedAt?: string;
 }) {
   await connectDB();
-  const at = opts.capturedAt ? new Date(opts.capturedAt) : new Date();
+  // Never let a device clock running fast push the exit into the future, which
+  // would credit work time that has not happened yet.
+  const at = opts.capturedAt
+    ? new Date(clampEventTimeToNow(new Date(opts.capturedAt).getTime(), Date.now()))
+    : new Date();
   // Automatic OS-detected exit — no schedule gate (mirrors the sustained-absence
   // and end-of-shift auto-closes, which also bypass the manual gate).
   //
@@ -501,7 +506,14 @@ export async function processGeofenceEnter(opts: {
     lng: opts.lng,
     accuracyMeters: opts.accuracyMeters,
     deviceId: opts.deviceId ?? "geofence",
-    capturedAt: opts.capturedAt,
+    // Same clamp as the exit path: a fast device clock must not back-date the
+    // check-in into the future, which evaluateLateness would then compare
+    // against the shift start.
+    capturedAt: opts.capturedAt
+      ? new Date(
+          clampEventTimeToNow(new Date(opts.capturedAt).getTime(), Date.now())
+        ).toISOString()
+      : undefined,
     geofenceTriggered: true,
   });
 }

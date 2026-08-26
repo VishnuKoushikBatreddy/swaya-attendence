@@ -210,6 +210,20 @@ export function clampCheckOut(checkInMs: number, checkOutMs: number): number {
   return checkOutMs < checkInMs ? checkInMs : checkOutMs;
 }
 
+/**
+ * Upper-bound a client-supplied event time at "now".
+ *
+ * capturedAt comes from the device, and evaluateEventFreshness deliberately
+ * tolerates a few minutes of clock skew so a slightly-fast phone isn't rejected
+ * outright. That tolerance must not become free work time: a future-dated event
+ * would otherwise extend a session past the present. Times in the past are left
+ * untouched — back-dating is the whole point of the retry queue.
+ */
+export function clampEventTimeToNow(capturedAtMs: number, nowMs: number): number {
+  if (!Number.isFinite(capturedAtMs)) return nowMs;
+  return capturedAtMs > nowMs ? nowMs : capturedAtMs;
+}
+
 /** Resolve a shift end: if end is at/before start it's an overnight shift (+1 day). */
 export function resolveShiftEnd(startMs: number, endMs: number): number {
   return endMs <= startMs ? endMs + 86_400_000 : endMs;
