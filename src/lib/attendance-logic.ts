@@ -20,36 +20,68 @@ export type SummaryPing = {
 
 export function summarizeSessionPings(
   pings: SummaryPing[],
-  endTimeMs: number
-): { totalInside: number; totalOutside: number; outsideVisitCount: number } {
+  endTimeMs: number,
+  opts?: {
+    /** Session check-in. Time before it is not part of this session. */
+    startTimeMs?: number;
+    /**
+     * How long a single ping's state may be trusted forward. Beyond this the
+     * time is UNACCOUNTED rather than assumed to continue.
+     */
+    maxIntervalMs?: number;
+  }
+): {
+  totalInside: number;
+  totalOutside: number;
+  outsideVisitCount: number;
+  unaccounted: number;
+} {
   let totalInside = 0;
   let totalOutside = 0;
   let outsideVisitCount = 0;
+  let unaccounted = 0;
   let inOutsideRun = false;
 
   const cap = endTimeMs;
+  const floor = opts?.startTimeMs ?? Number.NEGATIVE_INFINITY;
+  const maxInterval = opts?.maxIntervalMs ?? Number.POSITIVE_INFINITY;
+
   for (let i = 0; i < pings.length; i++) {
     const p = pings[i];
     const next = pings[i + 1];
     const inside = !!p.isInsideGeofence;
-    // Clamp EVERY interval's end to the session end (checkout / "now"), so pings
-    // captured after the effective checkout don't add time and intervals can't be
-    // double-counted against the away-gap.
+
+    // Clamp the interval to the session on BOTH sides. The upper clamp stops a
+    // ping captured after the effective check-out from adding time; the lower
+    // clamp stops a ping captured BEFORE check-in from doing the same, which an
+    // offline ping replayed with an earlier timestamp could otherwise do.
+    const tStart = Math.max(new Date(p.capturedAt).getTime(), floor);
     const rawEnd = next ? new Date(next.capturedAt).getTime() : cap;
     const tEnd = Math.min(rawEnd, cap);
-    const dt = Math.max(0, Math.floor((tEnd - new Date(p.capturedAt).getTime()) / 1000));
+    const spanMs = Math.max(0, tEnd - tStart);
+
+    // A ping is evidence of where someone was AT THAT MOMENT, not for however
+    // long the next ping happens to take. Extrapolating the whole gap meant a
+    // single check-in ping could credit an entire 9-hour shift as "inside" —
+    // and with distance-triggered native pings, a stationary employee routinely
+    // produces gaps of hours. Only the trusted window counts; the rest is
+    // reported as unaccounted so the numbers stay honest instead of invented.
+    const credited = Math.min(spanMs, maxInterval);
+    const dt = Math.floor(credited / 1000);
+    unaccounted += Math.floor((spanMs - credited) / 1000);
+
     if (inside) {
       totalInside += dt;
       if (inOutsideRun) inOutsideRun = false;
     } else {
       totalOutside += dt;
-      if (!inOutsideRun) {
+      if (dt > 0 && !inOutsideRun) {
         outsideVisitCount++;
         inOutsideRun = true;
       }
     }
   }
-  return { totalInside, totalOutside, outsideVisitCount };
+  return { totalInside, totalOutside, outsideVisitCount, unaccounted };
 }
 
 // ---------------------------------------------------------------------------
@@ -67,17 +99,24 @@ export type DaySession = {
 export function computeDayTotals(
   sessions: DaySession[],
   pingsBySession: Map<string, SummaryPing[]>,
-  nowMs: number
+  nowMs: number,
+  opts?: { maxIntervalMs?: number }
 ): {
   totalWorkSeconds: number;
   totalInsideSeconds: number;
   totalOutsideSeconds: number;
+  totalBreakSeconds: number;
+  totalUnaccountedSeconds: number;
   outsideVisitCount: number;
+  breakCount: number;
 } {
   let totalWorkSeconds = 0;
   let totalInsideSeconds = 0;
   let totalOutsideSeconds = 0;
+  let totalBreakSeconds = 0;
+  let totalUnaccountedSeconds = 0;
   let outsideVisitCount = 0;
+  let breakCount = 0;
   let prevCheckOutMs: number | null = null;
 
   for (const s of sessions) {
@@ -85,20 +124,39 @@ export function computeDayTotals(
     const endMs = s.checkOutAt ? new Date(s.checkOutAt).getTime() : nowMs;
     totalWorkSeconds += Math.max(0, Math.floor((endMs - startMs) / 1000));
 
-    const summ = summarizeSessionPings(pingsBySession.get(String(s._id)) || [], endMs);
+    const summ = summarizeSessionPings(pingsBySession.get(String(s._id)) || [], endMs, {
+      startTimeMs: startMs,
+      maxIntervalMs: opts?.maxIntervalMs,
+    });
     totalInsideSeconds += summ.totalInside;
     totalOutsideSeconds += summ.totalOutside;
+    totalUnaccountedSeconds += summ.unaccounted;
     outsideVisitCount += summ.outsideVisitCount;
 
-    // Time away between the previous check-out and this check-in counts as outside.
+    // Time between a check-out and the next check-in is a BREAK, reported on its
+    // own. Folding it into "outside" conflated two different things: outside is
+    // time on the clock but away from the fence, whereas a break is time off the
+    // clock entirely. That made `outside` incomparable to `work` (it could
+    // exceed it), and it flagged anyone who took a normal lunch, because a
+    // 1-hour break sailed past the 30-minute excessive-outside threshold.
     if (prevCheckOutMs != null) {
-      totalOutsideSeconds += Math.max(0, Math.floor((startMs - prevCheckOutMs) / 1000));
-      outsideVisitCount += 1;
+      totalBreakSeconds += Math.max(0, Math.floor((startMs - prevCheckOutMs) / 1000));
+      breakCount += 1;
     }
     prevCheckOutMs = endMs;
   }
 
-  return { totalWorkSeconds, totalInsideSeconds, totalOutsideSeconds, outsideVisitCount };
+  // Within a session: work = inside + outside + unaccounted. Breaks sit outside
+  // work entirely, so the day reconciles as work + break = elapsed on site.
+  return {
+    totalWorkSeconds,
+    totalInsideSeconds,
+    totalOutsideSeconds,
+    totalBreakSeconds,
+    totalUnaccountedSeconds,
+    outsideVisitCount,
+    breakCount,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -450,16 +508,60 @@ export function evaluateAutoCheckIn(opts: {
   return { ok: true };
 }
 
+/**
+ * The day's status, derived fresh from its totals.
+ *
+ * Previously this was applied as two mutations:
+ *
+ *   if (status === "pending") status = "present";
+ *   if (work < 4h && status === "present") status = "half_day";
+ *
+ * which had two failure modes. Once a day became "half_day" it could never
+ * become "present" again, because the second test required "present" — so an
+ * employee who worked 3 hours, then returned and worked 3 more, stayed
+ * half_day at 6 hours. And a "late" day never qualified for half_day at all,
+ * since it matched neither branch: two hours' work after a late arrival was
+ * recorded as a full late day.
+ *
+ * Deriving the status instead of mutating it makes it idempotent — recomputing
+ * after every session yields the same answer for the same totals.
+ *
+ * Precedence: a genuinely short day is half_day even if it also started late;
+ * the lateness is not lost, it stays on the day as lateByMinutes.
+ * on_leave/absent are set elsewhere and are never overwritten here.
+ */
+export function resolveDayStatus(opts: {
+  currentStatus: string | null | undefined;
+  totalWorkSeconds: number;
+  lateByMinutes: number;
+  halfDayThresholdSeconds?: number;
+}): string {
+  const threshold = opts.halfDayThresholdSeconds ?? 4 * 3600;
+  // Statuses decided by other rules win outright.
+  if (opts.currentStatus === "on_leave" || opts.currentStatus === "absent") {
+    return opts.currentStatus;
+  }
+  if (opts.totalWorkSeconds < threshold) return "half_day";
+  return opts.lateByMinutes > 0 ? "late" : "present";
+}
+
 export function classifyOutsideForDay(opts: {
   totalOutsideSeconds: number;
-  midDayCheckouts: number;
   flagThresholdSeconds?: number;
 }): { flagExcessiveOutside: boolean; outsideCounts: boolean } {
   const threshold = opts.flagThresholdSeconds ?? 30 * 60;
-  // No real departure -> outside time is jitter -> full day present, no flag.
-  if (opts.midDayCheckouts <= 0) {
-    return { flagExcessiveOutside: false, outsideCounts: false };
-  }
+  // Outside time counts regardless of how many times the employee checked out.
+  //
+  // This used to be ignored entirely unless there had been a mid-day check-out,
+  // on the theory that outside time in one continuous session was boundary
+  // jitter. That inverted the incentive: someone who left for four hours WITHOUT
+  // checking out kept the full day unflagged, while the same absence taken
+  // honestly — checking out and back in — lost the hours and got flagged.
+  //
+  // Jitter is already handled upstream and does not need this exemption: a
+  // reading worse than MAX_PING_ACCURACY_METERS cannot change the inside/outside
+  // state at all (see effectiveInsideState), and the threshold below tolerates
+  // genuine boundary noise.
   return {
     flagExcessiveOutside: opts.totalOutsideSeconds > threshold,
     outsideCounts: true,

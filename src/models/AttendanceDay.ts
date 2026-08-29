@@ -47,6 +47,13 @@ const AttendanceDaySchema = new Schema(
     totalInsideSeconds: { type: Number, default: 0 },
     totalOutsideSeconds: { type: Number, default: 0 },
     outsideVisitCount: { type: Number, default: 0 },
+    // Time between a check-out and the next check-in — off the clock, so kept
+    // apart from totalOutsideSeconds (which is on-clock but away from the site).
+    totalBreakSeconds: { type: Number, default: 0 },
+    breakCount: { type: Number, default: 0 },
+    // In-session time with no ping close enough to vouch for it. Reported rather
+    // than silently attributed to inside/outside.
+    totalUnaccountedSeconds: { type: Number, default: 0 },
     lateByMinutes: { type: Number, default: 0 },
     earlyLeaveMinutes: { type: Number, default: 0 },
     isFlagged: { type: Boolean, default: false, index: true },

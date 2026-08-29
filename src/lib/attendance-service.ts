@@ -28,6 +28,7 @@ import {
   clampCheckOut,
   clampEventTimeToNow,
   classifyOutsideForDay,
+  resolveDayStatus,
   resolveAutoCheckout,
   shouldGapCheckout,
   deriveCheckoutSource,
@@ -658,19 +659,10 @@ async function finalizeSession(opts: {
   );
 
   // Roll up the WHOLE day across all sessions (cumulative work/inside/outside,
-  // including the away-gaps between sessions) — never just this one session.
+  // plus break time between sessions) — never just this one session.
   const totals = await recomputeDayTotals(session.attendanceDayId);
-
-  // Mid-day checkouts = the number of times the employee actually left the site
-  // and a session closed before the day's final close (= sessions − 1). A single
-  // continuous session means 0 — they never left, so outside time is GPS jitter.
-  const sessionCount = await AttendanceSession.countDocuments({
-    attendanceDayId: session.attendanceDayId,
-  });
-  const midDayCheckouts = Math.max(0, sessionCount - 1);
   const outside = classifyOutsideForDay({
     totalOutsideSeconds: totals.totalOutsideSeconds,
-    midDayCheckouts,
   });
 
   const day = await AttendanceDay.findById(session.attendanceDayId);
@@ -686,17 +678,19 @@ async function finalizeSession(opts: {
     day.totalWorkSeconds = totals.totalWorkSeconds;
     day.totalInsideSeconds = totals.totalInsideSeconds;
     day.totalOutsideSeconds = totals.totalOutsideSeconds;
+    day.totalBreakSeconds = totals.totalBreakSeconds;
+    day.totalUnaccountedSeconds = totals.totalUnaccountedSeconds;
     day.outsideVisitCount = totals.outsideVisitCount;
+    day.breakCount = totals.breakCount;
 
     const reasons = new Set(day.flagReasons || []);
-    // Outside time only counts against the employee if they truly checked out and
-    // left during the day. With no mid-day checkout it's jitter -> full day present.
     if (outside.flagExcessiveOutside) {
       day.isFlagged = true;
       reasons.add("excessive_outside_time");
-    } else if (!outside.outsideCounts) {
-      // Single continuous session: never flag for outside; if a prior partial
-      // finalize flagged it, clear that reason so the day reads as a full day.
+    } else {
+      // Re-evaluated on every finalize: a later session can bring the day back
+      // under the threshold, and a flag set by an earlier partial rollup must
+      // not stick once it no longer holds.
       reasons.delete("excessive_outside_time");
       if (reasons.size === 0) day.isFlagged = false;
     }
@@ -704,10 +698,15 @@ async function finalizeSession(opts: {
       reasons.add(opts.reason);
     }
     day.flagReasons = Array.from(reasons);
-    if (day.status === "pending") day.status = "present";
-    if (day.totalWorkSeconds < 4 * 3600 && day.status === "present") {
-      day.status = "half_day";
-    }
+
+    // Derived, not mutated — see resolveDayStatus. Mutating meant half_day was a
+    // one-way door (3h then 3h more stayed half_day at 6h) and a late day could
+    // never be half_day at all.
+    day.status = resolveDayStatus({
+      currentStatus: day.status,
+      totalWorkSeconds: day.totalWorkSeconds,
+      lateByMinutes: day.lateByMinutes ?? 0,
+    });
     await day.save();
   }
 
@@ -766,9 +765,11 @@ async function recomputeDayTotals(attendanceDayId: any, nowMs?: number) {
     else pingsBySession.set(key, [p]);
   }
 
-  // Pure aggregation (cumulative work/inside/outside + away-gaps) — see
+  // Pure aggregation (work/inside/outside/break/unaccounted) — see
   // attendance-logic.ts. The DB fetch lives here; the math is unit-tested there.
-  return computeDayTotals(sessions, pingsBySession, nowMs ?? Date.now());
+  return computeDayTotals(sessions, pingsBySession, nowMs ?? Date.now(), {
+    maxIntervalMs: env.PING_TRUST_WINDOW_MS,
+  });
 }
 
 /**
@@ -1235,7 +1236,10 @@ export async function processPings(opts: {
         totalWorkSeconds: totals.totalWorkSeconds,
         totalInsideSeconds: totals.totalInsideSeconds,
         totalOutsideSeconds: totals.totalOutsideSeconds,
+        totalBreakSeconds: totals.totalBreakSeconds,
+        totalUnaccountedSeconds: totals.totalUnaccountedSeconds,
         outsideVisitCount: totals.outsideVisitCount,
+        breakCount: totals.breakCount,
       },
     });
   }

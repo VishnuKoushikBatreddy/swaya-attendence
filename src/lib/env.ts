@@ -97,6 +97,12 @@ export const env = {
   // tolerance and simply forgives proportionally more misses.
   PING_GAP_CHECKOUT_ENABLED: bool("PING_GAP_CHECKOUT_ENABLED", true),
   PING_GAP_CHECKOUT_MINUTES: num("PING_GAP_CHECKOUT_MINUTES", 15),
+  // How long a single location ping vouches for the employee's position when
+  // computing inside/outside time. Beyond this the gap is reported as
+  // unaccounted rather than assumed to continue — otherwise one ping at
+  // check-in credited an entire shift as "inside". Set a little above
+  // PING_INTERVAL_MS so a normally-tracked shift is fully accounted.
+  PING_TRUST_WINDOW_MS: num("PING_TRUST_WINDOW_MS", 300_000), // 5 minutes
   // Auto check-in: while an employee is inside their site's geofence during
   // scheduled hours and not yet checked in, the app checks them in without a tap.
   // Off switch is server-side and delivered on /api/attendance/today, so it can

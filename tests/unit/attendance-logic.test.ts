@@ -36,6 +36,7 @@ describe("summarizeSessionPings", () => {
       totalInside: 0,
       totalOutside: 0,
       outsideVisitCount: 0,
+      unaccounted: 0,
     });
   });
 
@@ -101,10 +102,12 @@ describe("computeDayTotals", () => {
     expect(r.totalWorkSeconds).toBe(4 * 3600);
     // inside = (9->10 + 11->12) [A] + (13->14) [B]
     expect(r.totalInsideSeconds).toBe(3 * 3600);
-    // outside = (10->11) in-session [A] + away-gap (12->13)
-    expect(r.totalOutsideSeconds).toBe(2 * 3600);
-    // visits = 1 in-session excursion (A) + 1 away-gap
-    expect(r.outsideVisitCount).toBe(2);
+    // outside = ONLY the in-session excursion (10->11) in A. The 12->13 gap
+    // between sessions is a BREAK: off the clock, so not "outside".
+    expect(r.totalOutsideSeconds).toBe(3600);
+    expect(r.outsideVisitCount).toBe(1);
+    expect(r.totalBreakSeconds).toBe(3600);
+    expect(r.breakCount).toBe(1);
   });
 
   it("does not double-count work when sessions are back-to-back (no away gap seconds)", () => {
@@ -114,8 +117,11 @@ describe("computeDayTotals", () => {
     ];
     const r = computeDayTotals(sessions, new Map(), ms(99));
     expect(r.totalWorkSeconds).toBe(4 * 3600);
-    // away gap is 0 seconds, but still counted as a visit transition
-    expect(r.outsideVisitCount).toBe(1);
+    // The break is 0 seconds long but is still a break transition; it must not
+    // appear as outside-the-fence time.
+    expect(r.totalBreakSeconds).toBe(0);
+    expect(r.breakCount).toBe(1);
+    expect(r.outsideVisitCount).toBe(0);
   });
 });
 
@@ -387,35 +393,39 @@ describe("resolveAutoCheckout (lunch edge case)", () => {
 
 // ===========================================================================
 // Outside time only counts when the employee actually checked out mid-day.
-// (Full day present when outside>0 but no mid-day checkout — GPS jitter.)
+// (Outside time counts regardless of mid-day check-outs — see the rationale in
+// classifyOutsideForDay. The old "single session means jitter" exemption made
+// NOT checking out more favourable than doing so honestly.)
 // ===========================================================================
 describe("classifyOutsideForDay", () => {
-  it("FULL DAY PRESENT: outside time with NO mid-day checkout is jitter (not flagged)", () => {
-    const r = classifyOutsideForDay({ totalOutsideSeconds: 37 * 60, midDayCheckouts: 0 });
-    expect(r.flagExcessiveOutside).toBe(false);
-    expect(r.outsideCounts).toBe(false);
-  });
-
-  it("zero outside + no checkout -> still a clean full day", () => {
-    const r = classifyOutsideForDay({ totalOutsideSeconds: 0, midDayCheckouts: 0 });
-    expect(r.flagExcessiveOutside).toBe(false);
-  });
-
-  it("with a real mid-day checkout, large outside time IS flagged", () => {
-    const r = classifyOutsideForDay({ totalOutsideSeconds: 45 * 60, midDayCheckouts: 1 });
+  it("flags excessive outside time even with a single continuous session", () => {
+    // Previously exempted as jitter: this is the loophole that rewarded staying
+    // checked in while away for hours.
+    const r = classifyOutsideForDay({ totalOutsideSeconds: 37 * 60 });
     expect(r.flagExcessiveOutside).toBe(true);
     expect(r.outsideCounts).toBe(true);
   });
 
-  it("with a real checkout but outside under the threshold, not flagged", () => {
-    const r = classifyOutsideForDay({ totalOutsideSeconds: 10 * 60, midDayCheckouts: 1 });
+  it("zero outside is a clean day", () => {
+    const r = classifyOutsideForDay({ totalOutsideSeconds: 0 });
     expect(r.flagExcessiveOutside).toBe(false);
     expect(r.outsideCounts).toBe(true);
   });
 
+  it("flags large outside time", () => {
+    const r = classifyOutsideForDay({ totalOutsideSeconds: 45 * 60 });
+    expect(r.flagExcessiveOutside).toBe(true);
+  });
+
+  it("tolerates outside time under the threshold (boundary jitter)", () => {
+    expect(classifyOutsideForDay({ totalOutsideSeconds: 10 * 60 }).flagExcessiveOutside).toBe(false);
+    expect(classifyOutsideForDay({ totalOutsideSeconds: 30 * 60 }).flagExcessiveOutside).toBe(false);
+    expect(classifyOutsideForDay({ totalOutsideSeconds: 30 * 60 + 1 }).flagExcessiveOutside).toBe(true);
+  });
+
   it("honours a custom flag threshold", () => {
     expect(
-      classifyOutsideForDay({ totalOutsideSeconds: 20 * 60, midDayCheckouts: 2, flagThresholdSeconds: 15 * 60 })
+      classifyOutsideForDay({ totalOutsideSeconds: 20 * 60, flagThresholdSeconds: 15 * 60 })
         .flagExcessiveOutside
     ).toBe(true);
   });

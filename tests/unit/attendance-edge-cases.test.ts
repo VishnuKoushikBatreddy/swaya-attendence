@@ -97,17 +97,20 @@ describe("re-entry after auto-checkout & multiple checkouts", () => {
     ];
     const r = computeDayTotals(sessions, new Map(), ms(99));
     expect(r.totalWorkSeconds).toBe(3 * 3600 + 4 * 3600); // both sessions
-    expect(r.outsideVisitCount).toBe(1); // the 12->13 away-gap
-    expect(r.totalOutsideSeconds).toBe(3600); // exactly the away-gap
+    // The 12->13 gap is a BREAK (off the clock), not outside-the-fence time.
+    expect(r.totalBreakSeconds).toBe(3600);
+    expect(r.breakCount).toBe(1);
+    expect(r.totalOutsideSeconds).toBe(0);
+    expect(r.outsideVisitCount).toBe(0);
   });
 
-  it("three cycles produce two away-gaps", () => {
+  it("three cycles produce two breaks", () => {
     const sessions = [
       { _id: "A", checkInAt: T(9), checkOutAt: T(10) },
       { _id: "B", checkInAt: T(11), checkOutAt: T(12) },
       { _id: "C", checkInAt: T(13), checkOutAt: T(14) },
     ];
-    expect(computeDayTotals(sessions, new Map(), ms(99)).outsideVisitCount).toBe(2);
+    expect(computeDayTotals(sessions, new Map(), ms(99)).breakCount).toBe(2);
   });
 });
 
