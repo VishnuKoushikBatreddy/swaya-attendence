@@ -28,13 +28,52 @@ function loadDotenvLocal() {
 loadDotenvLocal();
 
 const MONGODB_URI = process.env.MONGODB_URI || "";
-const MONGODB_DB = process.env.MONGODB_DB_NAME || "attendance";
+// NOTE: no default. MONGODB_DB_NAME used to fall back to "attendance", which is
+// the production database name — see assertThrowawayDatabase below.
+const MONGODB_DB = process.env.MONGODB_DB_NAME || "";
+
+/** A database name must look unmistakably disposable to be wiped. */
+const THROWAWAY_NAME = /(^|[_-])(test|tests|ci|e2e|cypress|sandbox)([_-]|$)/i;
+
+/**
+ * Refuse to touch anything that isn't clearly a throwaway database.
+ *
+ * Both seed() and cleanup() below delete EVERY DOCUMENT IN EVERY COLLECTION.
+ * MONGODB_DB_NAME previously defaulted to "attendance" — the production
+ * database — so `npm run e2e` on a machine with a real MONGODB_URI in
+ * .env.local would silently destroy live attendance data. The URI is loaded
+ * from .env.local automatically a few lines above, so this needed no unusual
+ * setup to happen; it just needed someone to run the e2e suite.
+ *
+ * Failing loudly with instructions is the only safe default here: there is no
+ * way to tell a "safe" database from a real one except by name.
+ */
+function assertThrowawayDatabase(name: string) {
+  if (!name) {
+    throw new Error(
+      "MONGODB_DB_NAME is not set.\n" +
+        "The Cypress seed DELETES EVERY DOCUMENT in the target database, so it " +
+        "refuses to guess.\n" +
+        "Run against a throwaway database, e.g.:\n" +
+        "  MONGODB_DB_NAME=attendance_ci npm run e2e"
+    );
+  }
+  if (!THROWAWAY_NAME.test(name)) {
+    throw new Error(
+      `Refusing to seed "${name}": the Cypress seed DELETES EVERY DOCUMENT in ` +
+        "the target database and this name does not look like a throwaway.\n" +
+        "Use a name containing test / ci / e2e / cypress / sandbox, e.g.:\n" +
+        "  MONGODB_DB_NAME=attendance_ci npm run e2e"
+    );
+  }
+}
 
 let connected = false;
 
 async function connect() {
   if (connected) return;
   if (!MONGODB_URI) throw new Error("MONGODB_URI is required for seed task");
+  assertThrowawayDatabase(MONGODB_DB);
   mongoose.set("strictQuery", true);
   await mongoose.connect(MONGODB_URI, { dbName: MONGODB_DB, serverSelectionTimeoutMS: 30000 });
   connected = true;
