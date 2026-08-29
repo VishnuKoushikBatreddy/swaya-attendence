@@ -55,7 +55,10 @@ export default function AdminLivePage() {
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
-  const [nowMs, setNowMs] = useState(() => Date.now());
+  // Starts at 0 rather than Date.now(): a clock read during render differs
+  // between the server pass and the client pass, which is a hydration mismatch
+  // waiting to happen. The ticking effect below fills it in immediately.
+  const [nowMs, setNowMs] = useState(0);
 
   // Discard a slow response that a newer request has already superseded.
   const seqRef = useRef(0);
@@ -97,6 +100,7 @@ export default function AdminLivePage() {
 
   // Ticks the on-shift durations between polls.
   useEffect(() => {
+    setNowMs(Date.now());
     const t = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);

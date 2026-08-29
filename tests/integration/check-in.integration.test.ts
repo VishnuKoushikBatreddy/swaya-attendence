@@ -29,7 +29,13 @@ describe.skipIf(!RUN)("processCheckIn (integration)", () => {
   beforeAll(async () => {
     ({ processCheckIn } = await import("@/lib/attendance-service"));
     models = await import("@/models");
-    ({ disconnectDB } = await import("@/lib/db"));
+    const db = await import("@/lib/db");
+    disconnectDB = db.disconnectDB;
+
+    // MUST connect before touching a model. Without this every operation sits in
+    // Mongoose's buffer until it times out — which is what these tests did, silently,
+    // because they are skipped unless RUN_DB_TESTS=1.
+    await db.connectDB();
 
     const site = await models.WorkSite.create({
       companyId,
@@ -57,6 +63,10 @@ describe.skipIf(!RUN)("processCheckIn (integration)", () => {
       models.AttendanceDay.deleteMany(ids),
       models.LocationPing.deleteMany(ids),
       models.GeofenceEvent.deleteMany(ids),
+      // The check-in flow also writes the audit ledger and outside-site logs;
+      // omitting them left rows behind in the test database on every run.
+      models.AttendanceEvent.deleteMany(ids),
+      models.OutsideSiteLog.deleteMany(ids),
     ]);
     await disconnectDB();
   });

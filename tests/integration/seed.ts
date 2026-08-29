@@ -14,6 +14,12 @@ import {
   ShiftTemplate,
   EmployeeSiteAssignment,
   EmployeeSchedule,
+  AttendanceDay,
+  AttendanceSession,
+  AttendanceEvent,
+  LocationPing,
+  GeofenceEvent,
+  OutsideSiteLog,
 } from "@/models";
 
 export type SeededCompany = {
@@ -108,5 +114,13 @@ export async function cleanupCompanies(ids: Types.ObjectId[]) {
     ShiftTemplate.deleteMany(f),
     EmployeeSiteAssignment.deleteMany(f),
     EmployeeSchedule.deleteMany(f),
+    // Everything the attendance flow writes. These were missing, so each run
+    // left geofence events and the audit ledger behind in the test database.
+    AttendanceDay.deleteMany(f),
+    AttendanceSession.deleteMany(f),
+    AttendanceEvent.deleteMany(f),
+    LocationPing.deleteMany(f),
+    GeofenceEvent.deleteMany(f),
+    OutsideSiteLog.deleteMany(f),
   ]);
 }

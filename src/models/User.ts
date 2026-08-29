@@ -42,9 +42,21 @@ const UserSchema = new Schema(
   { timestamps: true }
 );
 
+// Employee codes are unique per company — but only among users that HAVE one.
+//
+// This was `sparse: true`, which does not do that on a COMPOUND index: a sparse
+// compound index skips a document only when it is missing EVERY indexed field.
+// companyId is required on every user, so every user was indexed, with
+// employeeCode null. The second user without a code in the same company then
+// collided on { companyId, null } and the create failed — surfacing as a
+// confusing "Already exists" 409, since withApi maps duplicate-key to 409.
+// Admins, managers and any employee left without a code are all affected.
+//
+// A partial index expresses the real rule: only index rows that actually carry
+// a code, so any number of users may have none.
 UserSchema.index(
   { companyId: 1, employeeCode: 1 },
-  { unique: true, sparse: true }
+  { unique: true, partialFilterExpression: { employeeCode: { $type: "string" } } }
 );
 
 export const User = (models.User as any) || model("User", UserSchema);

@@ -100,6 +100,18 @@ export default function EmployeePage() {
   const [tracking, setTracking] = useState(false);
   const [nowTs, setNowTs] = useState(0);
   const [pending, setPending] = useState<QueuedAction[]>([]);
+  // Empty on the server, filled once mounted — see the note where it is rendered.
+  const [todayLabel, setTodayLabel] = useState("");
+
+  useEffect(() => {
+    setTodayLabel(
+      new Date().toLocaleDateString(undefined, {
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+      })
+    );
+  }, []);
 
   const loadSeq = useRef(0);
   const loadToday = useCallback(async () => {
@@ -513,13 +525,12 @@ export default function EmployeePage() {
       <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Today</h1>
-          <p className="mt-0.5 text-sm text-muted-foreground">
-            {new Date().toLocaleDateString(undefined, {
-              weekday: "long",
-              day: "numeric",
-              month: "long",
-            })}
-          </p>
+          {/* Rendered after mount, never during SSR: toLocaleDateString resolves
+              against the SERVER's locale and timezone first and the browser's
+              second, so emitting it inline produced two different strings and
+              React aborted hydration with "Text content does not match
+              server-rendered HTML". */}
+          <p className="mt-0.5 text-sm text-muted-foreground">{todayLabel}</p>
         </div>
         <Badge
           className="capitalize"
