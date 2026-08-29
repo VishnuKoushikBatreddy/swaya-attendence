@@ -6,6 +6,7 @@ export default defineConfig({
     setupNodeEvents(on, config) {
       // hook for db cleanup if needed
       on("task", {
+        log(msg) { console.log(msg); return null; },
         seed: async () => {
           const { seed } = await import("./cypress/support/seed");
           return seed();

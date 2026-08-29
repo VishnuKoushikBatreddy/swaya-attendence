@@ -59,6 +59,34 @@ function stubGeolocation(win: Cypress.AUTWindow, lat: number, lng: number, accur
   });
 }
 
+const ROLE_HOME: Record<string, string> = {
+  super_admin: "/super-admin",
+  admin: "/admin",
+  manager: "/manager",
+  employee: "/employee",
+};
+
+/**
+ * Poll /api/me until the session is live server-side.
+ *
+ * Explicit recursion rather than `cy.getCookie(...).should("exist")`: that does
+ * NOT retry — it evaluates once, immediately after the click, long before the
+ * sign-in round trip has finished, and fails with a bare "expected null to
+ * exist". Asking the server whether it accepts the session is also a stronger
+ * check than the cookie merely being present.
+ */
+function waitForSession(attempt = 0): Cypress.Chainable<void> {
+  return cy
+    .request({ url: "/api/me", failOnStatusCode: false, timeout: 60_000 })
+    .then((res) => {
+      if (res.status === 200) return;
+      if (attempt >= 120) {
+        throw new Error("Signed in but no session after 60s — check credentials/seed");
+      }
+      return cy.wait(500, { log: false }).then(() => waitForSession(attempt + 1));
+    }) as Cypress.Chainable<void>;
+}
+
 Cypress.Commands.add("loginAs", (role, email, password) => {
   const cred = email && password ? { email, password } : CREDENTIALS[role];
   if (!cred) throw new Error("No credentials for role: " + role);
@@ -66,8 +94,22 @@ Cypress.Commands.add("loginAs", (role, email, password) => {
     cy.get('input[type="email"]').clear().type(cred.email);
     cy.get('input[type="password"]').clear().type(cred.password);
     cy.get('button[type="submit"]').click();
-    // Wait for NextAuth session cookie + middleware redirect to settle.
-    cy.url({ timeout: 20000 }).should("not.include", "/login");
+
+    // Wait for the SESSION to be live, not for the URL to change.
+    //
+    // The page pushes to callbackUrl as soon as signIn() resolves. If the
+    // session is not yet visible to the middleware, that request is bounced to
+    // /login?callbackUrl=%2F — and it stays there, because nothing navigates
+    // again. Retrying the URL assertion could never recover from it, which is
+    // why this failed intermittently on a cold server (everything is slower, so
+    // the race is easier to lose) and passed on every rerun.
+    waitForSession();
+
+    // Land on the role home explicitly rather than relying on the redirect that
+    // just raced. In dev Next compiles routes on demand, so this first visit can
+    // genuinely take a while.
+    cy.visit(ROLE_HOME[role] ?? "/", { timeout: 60000 });
+    cy.url({ timeout: 30000 }).should("not.include", "/login");
   });
 });
 
