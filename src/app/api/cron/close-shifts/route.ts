@@ -3,18 +3,20 @@
  *   1. auto check-out of sessions whose scheduled shift end has passed, and
  *   2. detection of phones that stopped reporting.
  *
- * SCHEDULE MATTERS — it is every 10 minutes (vercel.json), not daily.
+ * SCHEDULE MATTERS — and it does NOT live in vercel.json.
  *
  * notifyOfflineEmployees deliberately skips sessions past their shift end
- * (silence after work is expected, not a fault). On the previous "0 2 * * *"
- * daily schedule the sweep therefore always ran after every shift had already
- * finished, so the offline alert could never fire for an ordinary day shift —
- * not late, never. The interval also bounds how long a session left open by a
- * dead phone inflates the live work total.
+ * (silence after work is expected, not a fault). On a once-a-day schedule the
+ * sweep therefore always ran after every shift had already finished, so the
+ * offline alert could never fire for an ordinary day shift — not late, never.
  *
- * Sub-daily crons require a Vercel Pro plan. On Hobby this silently degrades to
- * once a day: point an external scheduler (cron-job.org, GitHub Actions) at the
- * same URL with the `Authorization: Bearer <CRON_SECRET>` header instead.
+ * Vercel's Hobby plan rejects any sub-daily cron and fails the DEPLOYMENT, so
+ * vercel.json keeps a daily run as a backstop and the real 10-minute cadence
+ * lives in .github/workflows/cron-close-shifts.yml, which calls this endpoint
+ * with the same bearer token. On Pro, move the interval back into vercel.json
+ * and delete that workflow — running both just does the work twice.
+ *
+ * This endpoint is idempotent, so an extra invocation is harmless.
  *
  * Secured with CRON_SECRET — Vercel sends it as `Authorization: Bearer <secret>`.
  */

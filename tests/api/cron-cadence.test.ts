@@ -131,13 +131,28 @@ describe("cron cadence vs offline detection", () => {
     return expect(notifyOfflineEmployees(PHONE_DIED + 30 * MIN)).resolves.toBe(1);
   });
 
-  it("runs often enough to catch an outage before the shift ends", async () => {
-    // The configured cron must fire again within the shift, not the next day.
+  it("keeps vercel.json on a schedule the Hobby plan accepts", () => {
+    // Vercel rejects the whole DEPLOYMENT for a sub-daily cron on Hobby:
+    //   "Hobby accounts are limited to daily cron jobs."
+    // Putting the real cadence here once took production down, so this pins it.
+    // On Pro this may become "*/10 * * * *" — delete the GitHub Actions
+    // workflow at the same time, or every sweep runs twice.
     const schedule = JSON.parse(readFileSync("vercel.json", "utf8")).crons[0].schedule;
-    const everyMinutes = /^\*\/(\d+) \* \* \* \*$/.exec(schedule);
+    expect(
+      schedule,
+      `"${schedule}" is not a once-a-day expression; Hobby deployments will fail`
+    ).toMatch(/^\d+ \d+ \* \* \*$/);
+  });
+
+  it("runs often enough to catch an outage before the shift ends", async () => {
+    // The EFFECTIVE cadence comes from the GitHub Actions workflow, since the
+    // Vercel cron above can only be daily. Read it rather than hardcode it, so
+    // slowing the workflow down fails here instead of silently killing alerts.
+    const workflow = readFileSync(".github/workflows/cron-close-shifts.yml", "utf8");
+    const everyMinutes = /- cron: "\*\/(\d+) \* \* \* \*"/.exec(workflow);
     expect(
       everyMinutes,
-      `cron schedule "${schedule}" is not a sub-hourly interval; offline alerts cannot fire`
+      "no sub-hourly schedule in the cron workflow; offline alerts cannot fire"
     ).toBeTruthy();
 
     const intervalMs = Number(everyMinutes![1]) * MIN;
