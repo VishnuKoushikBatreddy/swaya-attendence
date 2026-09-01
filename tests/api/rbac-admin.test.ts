@@ -29,7 +29,6 @@ vi.mock("@/lib/api-helpers", async (orig) => {
 
 import { POST as sitesPost } from "@/app/api/sites/route";
 import { POST as shiftsPost } from "@/app/api/shifts/route";
-import { POST as holidaysPost } from "@/app/api/holidays/route";
 import { POST as schedulesPost } from "@/app/api/schedules/route";
 import { POST as employeesPost } from "@/app/api/admin/employees/route";
 import { GET as auditGet } from "@/app/api/audit/route";
@@ -50,7 +49,6 @@ beforeEach(() => {
 const writeRoutes: Array<[string, (r: any) => Promise<Response>]> = [
   ["POST /api/sites", sitesPost],
   ["POST /api/shifts", shiftsPost],
-  ["POST /api/holidays", holidaysPost],
   ["POST /api/schedules", schedulesPost],
   ["POST /api/admin/employees", employeesPost],
 ];

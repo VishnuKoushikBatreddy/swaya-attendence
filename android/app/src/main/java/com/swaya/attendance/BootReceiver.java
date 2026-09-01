@@ -53,6 +53,21 @@ public class BootReceiver extends BroadcastReceiver {
         // killed-app ENTER/EXIT fallback keeps working after a restart.
         reRegisterGeofence(context, prefs);
 
+        // A foreground service does not survive a restart, so resume tracking
+        // directly rather than relying on the employee noticing the notification
+        // below. Receiving BOOT_COMPLETED is an explicit exemption to Android
+        // 12+'s background foreground-service-start restrictions.
+        //
+        // It is still attempted defensively: newer releases tighten what a
+        // location-type service may do from the background, and OEM builds vary.
+        // If the start is refused the notification below remains the fallback,
+        // so the worst case is what happens today rather than a crash.
+        try {
+            LocationTrackingService.restartFromSavedConfig(context.getApplicationContext());
+        } catch (Exception e) {
+            Log.w("BootReceiver", "could not resume tracking after boot", e);
+        }
+
         NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm == null) {
             return;

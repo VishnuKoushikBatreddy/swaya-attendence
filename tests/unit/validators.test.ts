@@ -6,8 +6,6 @@ import {
   SiteSchema,
   ShiftSchema,
   EmployeeCreateSchema,
-  HolidaySchema,
-  LeaveCreateSchema,
   ScheduleRangeSchema,
 } from "@/lib/validators";
 
@@ -144,12 +142,7 @@ describe("EmployeeCreateSchema", () => {
 // Date-format validation
 // ---------------------------------------------------------------------------
 describe("date validators", () => {
-  it("Holiday/Leave/Schedule dates must be YYYY-MM-DD", () => {
-    expect(ok(HolidaySchema, { name: "X", holidayDate: "2026-06-13" })).toBe(true);
-    expect(ok(HolidaySchema, { name: "X", holidayDate: "13-06-2026" })).toBe(false);
-    expect(
-      ok(LeaveCreateSchema, { leaveType: "casual", startDate: "2026-06-13", endDate: "2026-06-14" })
-    ).toBe(true);
+  it("Schedule dates must be YYYY-MM-DD", () => {
     expect(
       ok(ScheduleRangeSchema, {
         fromDate: "2026/06/13",

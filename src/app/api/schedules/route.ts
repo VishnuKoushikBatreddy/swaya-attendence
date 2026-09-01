@@ -26,7 +26,7 @@ export const GET = withApi(async (req: NextRequest) => {
 });
 
 export const POST = withApi(async (req: NextRequest) => {
-  const session = await requireRole(["admin", "super_admin", "manager"]);
+  const session = await requireRole(["admin"]);
   const body = ScheduleBulkSchema.parse(await req.json());
   const companyId = new Types.ObjectId(session.user.companyId);
   const company = await Company.findById(companyId).lean();

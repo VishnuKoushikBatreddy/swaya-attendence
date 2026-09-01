@@ -1,5 +1,5 @@
 /**
- * Test seed — populates Mongo with a known company + admin + manager + 2 employees + 1 site.
+ * Test seed — populates Mongo with a known company + admin + 2 employees + 1 site.
  * Idempotent (cleans first). Invoked via cy.task('seed') in tests.
  */
 import { readFileSync, existsSync } from "node:fs";
@@ -108,12 +108,10 @@ export async function seed() {
     passwordHash: string;
     role: string;
     isActive: boolean;
-    managerId?: mongoose.Types.ObjectId;
     createdAt: Date;
     updatedAt: Date;
   }> = [
     { fullName: "Admin User", email: "admin@demo.com", role: "admin" },
-    { fullName: "Manager User", email: "manager@demo.com", role: "manager" },
     { fullName: "Alice Employee", email: "alice@demo.com", role: "employee" },
     { fullName: "Bob Employee", email: "bob@demo.com", role: "employee" },
   ].map((u) => ({
@@ -127,9 +125,6 @@ export async function seed() {
     createdAt: new Date(),
     updatedAt: new Date(),
   }));
-  // Set manager
-  users[2].managerId = users[1]._id;
-  users[3].managerId = users[1]._id;
   await db.collection("users").insertMany(users);
 
   // Site
@@ -147,9 +142,10 @@ export async function seed() {
   };
   await db.collection("worksites").insertOne(site);
 
-  // Assign both employees
+  // Assign both employees. Indexed off role rather than position: removing a
+  // user from the list above silently shifted these indices once already.
   await db.collection("employeesiteassignments").insertMany(
-    [users[2], users[3]].map((u) => ({
+    users.filter((u) => u.role === "employee").map((u) => ({
       _id: new mongoose.Types.ObjectId(),
       companyId: company._id,
       employeeId: u._id,

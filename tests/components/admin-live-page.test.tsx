@@ -20,7 +20,7 @@ function payload(over: Partial<any> = {}) {
     ok: true,
     data: {
       workDate: "2026-08-17",
-      summary: { total: 2, checkedIn: 1, outsideGeofence: 0, flagged: 0 },
+      summary: { total: 2, checkedIn: 1, outsideGeofence: 0, offline: 0, flagged: 0 },
       employees: [
         {
           id: "1",
@@ -30,6 +30,7 @@ function payload(over: Partial<any> = {}) {
           department: "Ops",
           checkedIn: false,
           checkedInAt: null,
+          connectivity: null,
           siteName: null,
           lastSeenAt: null,
           lastSeenMinutesAgo: null,
@@ -49,6 +50,7 @@ function payload(over: Partial<any> = {}) {
           department: "Eng",
           checkedIn: true,
           checkedInAt: new Date(now - 2 * HOUR).toISOString(),
+          connectivity: "live",
           siteName: "Main Office",
           lastSeenAt: new Date(now - 60_000).toISOString(),
           lastSeenMinutesAgo: 1,
@@ -115,7 +117,8 @@ describe("AdminLivePage rendering", () => {
 
     await screen.findByText("Alice Working");
     expect(screen.getByText(/Main Office/)).toBeTruthy();
-    expect(screen.getByText(/last seen 1m ago/)).toBeTruthy();
+    expect(screen.getByText(/updated 1m ago/)).toBeTruthy();
+    expect(screen.getByText(/On site/)).toBeTruthy();
   });
 
   it("badges someone who is checked in but away from the site", async () => {
@@ -126,7 +129,43 @@ describe("AdminLivePage rendering", () => {
     global.fetch = mockFetch(p);
     render(<AdminLivePage />);
 
-    expect(await screen.findByText("312m away")).toBeTruthy();
+    expect(await screen.findByText("312 m away")).toBeTruthy();
+  });
+
+  it("shows an employee as Offline when their phone stopped reporting", async () => {
+    const p = payload();
+    p.data.employees[1].connectivity = "offline";
+    p.data.employees[1].lastSeenMinutesAgo = 47;
+    p.data.summary.offline = 1;
+    global.fetch = mockFetch(p);
+    render(<AdminLivePage />);
+
+    expect(await screen.findByText("Offline")).toBeTruthy();
+    expect(screen.getByText(/updated 47m ago/)).toBeTruthy();
+  });
+
+  it("does NOT show a distance badge for an offline employee", async () => {
+    // Their last known position is stale, so reporting it as current distance
+    // would be misleading — the offline badge takes precedence.
+    const p = payload();
+    p.data.employees[1].connectivity = "offline";
+    p.data.employees[1].isInsideGeofence = false;
+    p.data.employees[1].distanceFromSiteMeters = 312;
+    global.fetch = mockFetch(p);
+    render(<AdminLivePage />);
+
+    await screen.findByText("Alice Working");
+    expect(screen.queryByText("312 m away")).toBeNull();
+  });
+
+  it("formats a long distance in kilometres", async () => {
+    const p = payload();
+    p.data.employees[1].isInsideGeofence = false;
+    p.data.employees[1].distanceFromSiteMeters = 3200;
+    global.fetch = mockFetch(p);
+    render(<AdminLivePage />);
+
+    expect(await screen.findByText("3.2 km away")).toBeTruthy();
   });
 
   it("filters by the search box", async () => {
@@ -175,7 +214,7 @@ describe("AdminLivePage rendering", () => {
   it("renders an empty state when the company has no employees", async () => {
     global.fetch = mockFetch(
       payload({
-        summary: { total: 0, checkedIn: 0, outsideGeofence: 0, flagged: 0 },
+        summary: { total: 0, checkedIn: 0, outsideGeofence: 0, offline: 0, flagged: 0 },
         employees: [],
       })
     );

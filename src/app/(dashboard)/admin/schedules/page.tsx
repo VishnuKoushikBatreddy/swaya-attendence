@@ -22,7 +22,6 @@ export default function SchedulesPage() {
   const [fromDate, setFromDate] = useState(today);
   const [toDate, setToDate] = useState(today);
   const [skipSundays, setSkipSundays] = useState(true);
-  const [skipHolidays, setSkipHolidays] = useState(true);
   const [rangeRows, setRangeRows] = useState<Record<string, RangeRow>>({});
   const [generating, setGenerating] = useState(false);
 
@@ -124,7 +123,7 @@ export default function SchedulesPage() {
     const res = await fetch("/api/schedules/range", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ fromDate, toDate, skipSundays, skipHolidays, entries }),
+      body: JSON.stringify({ fromDate, toDate, skipSundays, entries }),
     });
     const json = await res.json();
     setGenerating(false);
@@ -188,10 +187,6 @@ export default function SchedulesPage() {
             <label className="flex items-center gap-2 text-sm sm:self-end sm:pb-2">
               <input type="checkbox" checked={skipSundays} onChange={(e) => setSkipSundays(e.target.checked)} />
               Skip Sundays
-            </label>
-            <label className="flex items-center gap-2 text-sm sm:self-end sm:pb-2">
-              <input type="checkbox" checked={skipHolidays} onChange={(e) => setSkipHolidays(e.target.checked)} />
-              Skip company holidays
             </label>
           </div>
 

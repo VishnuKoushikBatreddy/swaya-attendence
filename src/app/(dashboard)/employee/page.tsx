@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Badge, badgeVariants } from "@/components/ui/badge";
 import { toast } from "@/components/ui/toaster";
 import { formatDuration, formatTime, formatTimeWithSeconds } from "@/lib/utils";
-import { evaluateAutoCheckIn } from "@/lib/attendance-logic";
+import { evaluateAutoCheckIn, isWithinTrackingWindow } from "@/lib/attendance-logic";
 import dynamic from "next/dynamic";
 import { LocationTracker } from "@/components/geo/LocationTracker";
 import { getDeviceId } from "@/lib/device";
@@ -83,7 +83,6 @@ type TodayState = {
   site: any;
   schedule?: any;
   shift?: any;
-  leave?: any;
   /** Server's PING_INTERVAL_MS — drives the web tracker's cadence. */
   pingIntervalMs?: number;
   autoCheckIn?: { enabled: boolean; pollMs: number; graceMinutes: number };
@@ -322,9 +321,8 @@ export default function EmployeePage() {
   const isCheckedIn = lastPendingType ? lastPendingType === "check-in" : serverCheckedIn;
   // A scheduled non-working day (weekly off / company holiday) — no check-in needed.
   const isDayOff = today?.schedule != null && today.schedule.isWorkingDay === false;
-  // An approved leave covering today — also no check-in needed.
-  const isOnLeave = today?.leave != null;
-  const noCheckInNeeded = isOnLeave || isDayOff;
+  // A scheduled non-working day is now the only reason check-in is not required.
+  const noCheckInNeeded = isDayOff;
 
   // Tick the live work timer every second while checked in.
   useEffect(() => {
@@ -391,21 +389,37 @@ export default function EmployeePage() {
   const lastSession = today?.sessions?.length
     ? today.sessions[today.sessions.length - 1]
     : null;
+  const scheduleStartMs = today?.schedule?.expectedStartAt
+    ? new Date(today.schedule.expectedStartAt).getTime()
+    : null;
+  const scheduleEndMs = today?.schedule?.expectedEndAt
+    ? new Date(today.schedule.expectedEndAt).getTime()
+    : null;
+  const graceMinutes = today?.autoCheckIn?.graceMinutes ?? 0;
+
   const autoCheckInDecision = evaluateAutoCheckIn({
     enabled: today?.autoCheckIn?.enabled ?? false,
     isCheckedIn,
     noCheckInNeeded,
     hasSite: siteLat != null && siteLng != null,
-    scheduleStartMs: today?.schedule?.expectedStartAt
-      ? new Date(today.schedule.expectedStartAt).getTime()
-      : null,
-    scheduleEndMs: today?.schedule?.expectedEndAt
-      ? new Date(today.schedule.expectedEndAt).getTime()
-      : null,
-    graceMinutes: today?.autoCheckIn?.graceMinutes ?? 0,
+    scheduleStartMs,
+    scheduleEndMs,
+    graceMinutes,
     lastSessionStatus: lastSession?.status ?? null,
     nowMs: nowTs || Date.now(),
   });
+
+  // Location is collected during the SCHEDULED SHIFT only, not for as long as a
+  // session happens to stay open. `nowTs` ticks every second while checked in,
+  // so this flips to false the moment the shift ends and the tracker stops —
+  // including the native foreground service, which stopTracker also shuts down.
+  const withinTrackingWindow = isWithinTrackingWindow({
+    scheduleStartMs,
+    scheduleEndMs,
+    graceMinutes,
+    nowMs: nowTs || Date.now(),
+  });
+  const trackingActive = isCheckedIn && withinTrackingWindow;
   const autoCheckInEligible = autoCheckInDecision.ok;
   const autoPollMs = today?.autoCheckIn?.pollMs ?? 60_000;
 
@@ -479,9 +493,9 @@ export default function EmployeePage() {
 
   // Native OS-geofence fallback (Android): register a geofence around the work
   // site whenever the employee HAS a site for today — kept active whether checked
-  // in OR out, so the OS can fire BOTH the leave (EXIT -> auto check-out) and the
-  // return (ENTER -> auto check-in) even after the app is killed. Removed only on
-  // a day off / leave / no site. The server schedule-gate still guards check-ins.
+  // in OR out, so the OS can fire BOTH the departure (EXIT -> auto check-out) and
+  // the return (ENTER -> auto check-in) even after the app is killed. Removed only
+  // on a day off / no site. The server schedule-gate still guards check-ins.
   // Depends on the primitive lat/lng/radius declared above (not the object) so
   // the 30s `today` poll doesn't needlessly re-register the geofence each time.
   useEffect(() => {
@@ -518,7 +532,7 @@ export default function EmployeePage() {
   return (
     <div className="space-y-6">
       <LocationTracker
-        active={isCheckedIn}
+        active={trackingActive}
         intervalMs={today?.pingIntervalMs}
         onAutoCheckout={handleAutoCheckout}
       />
@@ -568,11 +582,9 @@ export default function EmployeePage() {
 
           {noCheckInNeeded && !isCheckedIn ? (
             <div className="rounded-lg border bg-muted/50 p-5 text-center">
-              <p className="font-semibold">{isOnLeave ? "On leave" : "Day off"}</p>
+              <p className="font-semibold">Day off</p>
               <p className="mt-1 text-sm text-muted-foreground">
-                {isOnLeave
-                  ? `You're on approved ${today?.leave?.leaveType || ""} leave today — no check-in required.`
-                  : "Today is a weekly off or company holiday — no check-in required."}
+                Today is a scheduled non-working day — no check-in required.
               </p>
             </div>
           ) : !isCheckedIn ? (
@@ -628,6 +640,10 @@ export default function EmployeePage() {
               <Stat
                 label="Outside"
                 value={formatDuration(today?.day?.totalOutsideSeconds || 0)}
+              />
+              <Stat
+                label="Offline"
+                value={formatDuration(today?.day?.totalOfflineSeconds || 0)}
               />
             </div>
           )}

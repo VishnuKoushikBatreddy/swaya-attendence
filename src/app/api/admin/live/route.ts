@@ -1,5 +1,5 @@
 /**
- * Live employee status for admins/managers.
+ * Live employee status for admins.
  *
  * "Is this person checked in RIGHT NOW" lives on AttendanceSession.status
  * (active | flagged), not on AttendanceDay.status — which only classifies the
@@ -23,19 +23,16 @@ import { requireRole, ok, withApi } from "@/lib/api-helpers";
 import { getCompanyTimezone } from "@/lib/company";
 import { todayWorkDate } from "@/lib/workdate";
 import { haversineDistanceMeters } from "@/lib/geo";
+import { deriveConnectivity } from "@/lib/attendance-logic";
+import { env } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
 
 export const GET = withApi(async (_req: NextRequest) => {
-  const session = await requireRole(["admin", "super_admin", "manager"]);
+  const session = await requireRole(["admin"]);
   const companyId = new Types.ObjectId(session.user.companyId);
 
-  // Managers see only their own reports, matching the scoping in the other
-  // reporting routes.
   const userFilter: Record<string, unknown> = { companyId, isActive: true };
-  if (session.user.role === "manager") {
-    userFilter.managerId = new Types.ObjectId(session.user.id);
-  }
 
   const [timezone, users, openSessions] = await Promise.all([
     getCompanyTimezone(session.user.companyId),
@@ -129,6 +126,17 @@ export const GET = withApi(async (_req: NextRequest) => {
       sessionStatus: open ? open.status : null,
       siteName: site?.name ?? null,
 
+      // "Checked in" only means a session is open. Connectivity says whether the
+      // phone is still reporting — without it a dead phone and someone actively
+      // working look identical on the board.
+      connectivity: open
+        ? deriveConnectivity(
+            ping?.capturedAt ? new Date(ping.capturedAt).getTime() : null,
+            nowMs,
+            env.PING_INTERVAL_MS,
+            env.OFFLINE_AFTER_MS
+          )
+        : null,
       lastSeenAt: ping?.capturedAt ?? null,
       lastSeenMinutesAgo: ping?.capturedAt
         ? Math.max(0, Math.floor((nowMs - new Date(ping.capturedAt).getTime()) / 60_000))
@@ -148,11 +156,15 @@ export const GET = withApi(async (_req: NextRequest) => {
   return ok({
     workDate,
     timezone,
+    // Lets the client label thresholds without duplicating the rule.
+    pingIntervalMs: env.PING_INTERVAL_MS,
+    offlineAfterMs: env.OFFLINE_AFTER_MS,
     serverTime: new Date().toISOString(),
     summary: {
       total: rows.length,
       checkedIn: rows.filter((r: any) => r.checkedIn).length,
       outsideGeofence: rows.filter((r: any) => r.checkedIn && r.isInsideGeofence === false).length,
+      offline: rows.filter((r: any) => r.connectivity === "offline").length,
       flagged: rows.filter((r: any) => r.isFlagged).length,
     },
     employees: rows,

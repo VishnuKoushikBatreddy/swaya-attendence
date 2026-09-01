@@ -73,7 +73,7 @@ describe.skipIf(!RUN)("time accounting (integration)", () => {
     await disconnectDB();
   }, 120_000);
 
-  it("persists work/inside/outside/break/unaccounted through a full lifecycle", async () => {
+  it("persists work/inside/outside/break/offline through a full lifecycle", async () => {
     // Check in at T0, inside the fence.
     const checkIn = await service.processCheckIn({
       employeeId: String(employeeId),
@@ -133,7 +133,7 @@ describe.skipIf(!RUN)("time accounting (integration)", () => {
     // wiring the unit tests cannot prove.
     expect(day.totalBreakSeconds).toBeDefined();
     expect(day.breakCount).toBeDefined();
-    expect(day.totalUnaccountedSeconds).toBeDefined();
+    expect(day.totalOfflineSeconds).toBeDefined();
 
     // Single continuous session, so no break.
     expect(day.totalBreakSeconds).toBe(0);
@@ -143,9 +143,9 @@ describe.skipIf(!RUN)("time accounting (integration)", () => {
     // loophole that used to discard it.
     expect(day.totalOutsideSeconds).toBeGreaterThan(0);
 
-    // Totals reconcile: work = inside + outside + unaccounted.
+    // Totals reconcile: work = inside + outside + offline.
     expect(
-      day.totalInsideSeconds + day.totalOutsideSeconds + day.totalUnaccountedSeconds
+      day.totalInsideSeconds + day.totalOutsideSeconds + day.totalOfflineSeconds
     ).toBe(day.totalWorkSeconds);
 
     // Nothing is invented: presence never exceeds the elapsed session.
@@ -188,7 +188,12 @@ describe.skipIf(!RUN)("time accounting (integration)", () => {
     expect(day.totalWorkSeconds).toBe(4 * 60 * 60);
     // Only the trust window is credited; the rest is reported as unknown.
     expect(day.totalInsideSeconds).toBeLessThan(20 * 60);
-    expect(day.totalUnaccountedSeconds).toBeGreaterThan(3 * 60 * 60);
+    expect(day.totalOfflineSeconds).toBeGreaterThan(3 * 60 * 60);
+
+    // A day built almost entirely on unevidenced time must not look clean: over
+    // 3h of 4h offline trips both the ratio and the floor.
+    expect(day.isFlagged).toBe(true);
+    expect(day.flagReasons).toContain("excessive_offline_time");
 
     await models.AttendanceDay.deleteMany({ employeeId: loneId });
     await models.AttendanceSession.deleteMany({ employeeId: loneId });

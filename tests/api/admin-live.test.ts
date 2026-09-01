@@ -170,14 +170,11 @@ describe("GET /api/admin/live", () => {
     expect(h.capturedSessionFilter.status.$in).toEqual(["active", "flagged"]);
   });
 
-  it("restricts a manager to their own reports", async () => {
-    h.session = { user: { id: ADMIN, companyId: CO, role: "manager" } };
-    await live(req());
-    expect(String(h.capturedUserFilter.managerId)).toBe(ADMIN);
-  });
 
-  it("does not restrict by manager for an admin", async () => {
+  it("scopes to the whole company for an admin", async () => {
+    // The app has only admin and employee roles — there is no team sub-scoping.
     await live(req());
-    expect(h.capturedUserFilter.managerId).toBeUndefined();
+    expect(String(h.capturedUserFilter.companyId)).toBe(CO);
+    expect(h.capturedUserFilter.isActive).toBe(true);
   });
 });

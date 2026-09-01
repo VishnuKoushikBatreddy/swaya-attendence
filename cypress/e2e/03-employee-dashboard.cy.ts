@@ -1,5 +1,5 @@
 /**
- * Employee dashboard: landing, history, regularization, sites pages.
+ * Employee dashboard: landing, history, sites pages.
  */
 describe("Employee dashboard", () => {
   before(() => {
@@ -19,13 +19,6 @@ describe("Employee dashboard", () => {
   it("shows the history page", () => {
     cy.visit("/employee/history");
     cy.contains("Attendance History", { timeout: 10000 });
-  });
-
-  it("shows the regularization page", () => {
-    cy.visit("/employee/regularization");
-    cy.contains("Regularization", { timeout: 10000 });
-    cy.contains("Request correction");
-    cy.contains("My requests");
   });
 
   it("shows the sites page", () => {

@@ -32,7 +32,7 @@ describe("#1 a stale ping must not be extrapolated across a long gap", () => {
       maxIntervalMs: TRUST,
     });
     expect(r.totalInside).toBe(5 * 60);
-    expect(r.unaccounted).toBe(9 * 3600 - 5 * 60);
+    expect(r.offline).toBe(9 * 3600 - 5 * 60);
   });
 
   it("accounts a normally-tracked shift in full", () => {
@@ -42,7 +42,7 @@ describe("#1 a stale ping must not be extrapolated across a long gap", () => {
       maxIntervalMs: TRUST,
     });
     expect(r.totalInside).toBe(9 * 3600);
-    expect(r.unaccounted).toBe(0);
+    expect(r.offline).toBe(0);
   });
 
   it("does not invent presence for an open session whose pings stopped", () => {
@@ -60,7 +60,7 @@ describe("#1 a stale ping must not be extrapolated across a long gap", () => {
     expect(r.totalInsideSeconds).toBeLessThan(6 * 3600);
     // The rest is reported as unknown rather than assumed.
     expect(
-      r.totalInsideSeconds + r.totalOutsideSeconds + r.totalUnaccountedSeconds
+      r.totalInsideSeconds + r.totalOutsideSeconds + r.totalOfflineSeconds
     ).toBe(r.totalWorkSeconds);
   });
 });
@@ -106,9 +106,9 @@ describe("#2/#4 breaks are separate from outside, and totals reconcile", () => {
       .flagExcessiveOutside).toBe(false);
   });
 
-  it("reconciles: work = inside + outside + unaccounted", () => {
+  it("reconciles: work = inside + outside + offline", () => {
     const r = lunchDay();
-    expect(r.totalInsideSeconds + r.totalOutsideSeconds + r.totalUnaccountedSeconds).toBe(
+    expect(r.totalInsideSeconds + r.totalOutsideSeconds + r.totalOfflineSeconds).toBe(
       r.totalWorkSeconds
     );
   });
@@ -188,10 +188,7 @@ describe("#6/#7 day status is derived, not mutated", () => {
     expect(twice).toBe("half_day");
   });
 
-  it("never overwrites leave or absence", () => {
-    expect(
-      resolveDayStatus({ currentStatus: "on_leave", totalWorkSeconds: 0, lateByMinutes: 0 })
-    ).toBe("on_leave");
+  it("never overwrites absence", () => {
     expect(
       resolveDayStatus({ currentStatus: "absent", totalWorkSeconds: 0, lateByMinutes: 0 })
     ).toBe("absent");

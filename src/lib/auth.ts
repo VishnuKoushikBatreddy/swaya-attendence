@@ -6,7 +6,17 @@ import type { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import bcrypt from "bcryptjs";
 import { connectDB } from "./db";
+import { isRole, type Role } from "./roles";
 import { User } from "@/models";
+
+/**
+ * Coerce an untrusted value to a Role, defaulting to the least privileged one.
+ * Session and JWT roles originate in the database, so they are outside the type
+ * system until checked here.
+ */
+function toRole(value: unknown): Role {
+  return isRole(value) ? value : "employee";
+}
 
 export const authOptions: NextAuthOptions = {
   session: { strategy: "jwt", maxAge: 60 * 60 * 24 * 7 }, // 7 days
@@ -41,7 +51,11 @@ export const authOptions: NextAuthOptions = {
     async jwt({ token, user }) {
       if (user) {
         token.id = (user as { id: string }).id;
-        token.role = (user as { role: string }).role;
+        // Narrow rather than cast: the role comes from a database document, so
+        // a legacy or hand-edited value could be anything. Falling back to the
+        // least-privileged role means an unrecognised value can never be
+        // mistaken for an admin.
+        token.role = toRole((user as { role?: unknown }).role);
         token.companyId = (user as { companyId: string }).companyId;
       }
       return token;
@@ -49,7 +63,7 @@ export const authOptions: NextAuthOptions = {
     async session({ session, token }) {
       if (session.user) {
         session.user.id = (token.id as string) ?? "";
-        session.user.role = (token.role as string) ?? "employee";
+        session.user.role = toRole(token.role);
         session.user.companyId = (token.companyId as string) ?? "";
       }
       return session;

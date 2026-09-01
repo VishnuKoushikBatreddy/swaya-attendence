@@ -23,7 +23,7 @@ vi.mock("@/lib/notifications", () => ({ notifyCheckedOut: vi.fn() }));
 
 import { startTracker, stopTracker } from "@/lib/tracker";
 
-const DEFAULT_MS = 180_000;
+const DEFAULT_MS = 300_000; // mirrors env.PING_INTERVAL_MS
 
 /** Captures the delay passed to the tracker's repeating setInterval. */
 function intervalSpy() {
@@ -54,7 +54,7 @@ describe("web tracker cadence", () => {
     expect(spy).toHaveBeenCalledWith(expect.any(Function), 60_000);
   });
 
-  it("falls back to the declared 3-minute default when none is supplied", async () => {
+  it("falls back to the declared 5-minute default when none is supplied", async () => {
     const spy = intervalSpy();
     await startTracker({ active: true });
     expect(spy).toHaveBeenCalledWith(expect.any(Function), DEFAULT_MS);

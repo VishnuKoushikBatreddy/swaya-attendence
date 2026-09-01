@@ -14,10 +14,32 @@ import { toast } from "@/components/ui/toaster";
 import { Eye, EyeOff } from "lucide-react";
 import Link from "next/link";
 
+/**
+ * Constrain the post-login destination to a path inside this app.
+ *
+ * `callbackUrl` comes from the query string, and router.push() will happily
+ * perform a full navigation to an absolute URL — so /login?callbackUrl=https://
+ * evil.example handed a freshly authenticated user straight to an attacker's
+ * page. The middleware only ever sets this to a pathname, so anything else is
+ * either a mistake or an attack.
+ *
+ * "//evil.example" is rejected too: it starts with "/" but is protocol-relative
+ * and navigates off-site just the same.
+ */
+export function safeCallbackUrl(raw: string | null | undefined): string {
+  if (!raw) return "/";
+  if (!raw.startsWith("/")) return "/";
+  if (raw.startsWith("//")) return "/";
+  // Backslashes are normalised to "/" by some browsers, so "/\evil.example"
+  // can behave like a protocol-relative URL.
+  if (raw.startsWith("/\\")) return "/";
+  return raw;
+}
+
 function LoginFormInner() {
   const router = useRouter();
   const search = useSearchParams();
-  const callbackUrl = search.get("callbackUrl") || "/";
+  const callbackUrl = safeCallbackUrl(search.get("callbackUrl"));
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const {

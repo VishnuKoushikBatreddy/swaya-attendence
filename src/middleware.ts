@@ -5,19 +5,17 @@ import { withAuth } from "next-auth/middleware";
 import { NextResponse } from "next/server";
 
 const ROLE_PREFIXES: { prefix: string; allow: string[] }[] = [
-  { prefix: "/super-admin", allow: ["super_admin"] },
-  { prefix: "/admin", allow: ["admin", "super_admin"] },
-  { prefix: "/manager", allow: ["manager", "admin", "super_admin"] },
-  { prefix: "/employee", allow: ["employee", "manager", "admin", "super_admin"] },
+  // Each role owns exactly one area. The per-area layouts enforce the same rule
+  // server-side; these two must agree or the middleware lets a request through
+  // only for the layout to bounce it.
+  { prefix: "/admin", allow: ["admin"] },
+  { prefix: "/employee", allow: ["employee"] },
 ];
 
 const PUBLIC_AUTH_PATHS = ["/login", "/signup", "/forgot-password", "/reset-password"];
 
 function roleHome(role: string): string {
-  if (role === "super_admin") return "/super-admin";
-  if (role === "admin") return "/admin";
-  if (role === "manager") return "/manager";
-  return "/employee";
+  return role === "admin" ? "/admin" : "/employee";
 }
 
 function isPublicAuthPath(pathname: string): boolean {
@@ -76,9 +74,7 @@ export const config = {
     "/signup",
     "/forgot-password",
     "/reset-password",
-    "/super-admin/:path*",
     "/admin/:path*",
-    "/manager/:path*",
     "/employee/:path*",
   ],
 };

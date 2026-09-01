@@ -53,6 +53,9 @@ const AttendanceSessionSchema = new Schema(
       // Indexed via the { status, checkInAt } compound below, which also covers
       // the cron sweep's sort — a lone { status } index cannot.
     },
+    // Set once when the offline alert fires, so the recurring sweep notifies the
+    // admin a single time per session rather than on every run.
+    offlineNotifiedAt: { type: Date, default: null },
     deviceId: { type: String },
     appVersion: { type: String },
   },

@@ -8,13 +8,9 @@ import { getNav, activeHref } from "@/components/dashboard/nav-items";
 describe("getNav", () => {
   it("maps each role to its own menu", () => {
     expect(getNav("employee").map((i) => i.href)).toContain("/employee/history");
-    expect(getNav("manager").map((i) => i.href)).toEqual([
-      "/manager",
-      "/manager/approvals",
-      "/manager/reports",
-    ]);
     expect(getNav("admin").map((i) => i.href)).toContain("/admin/audit");
-    expect(getNav("super_admin").map((i) => i.href)).toContain("/super-admin/companies");
+    // Only two roles exist; anything that is not admin gets the employee menu.
+    expect(getNav("employee")).not.toEqual(getNav("admin"));
   });
 
   it("falls back to the employee menu for an unknown role", () => {
@@ -33,7 +29,6 @@ describe("activeHref", () => {
 
   it("selects the child, NOT the section root, on a child path", () => {
     expect(activeHref(emp, "/employee/history")).toBe("/employee/history");
-    expect(activeHref(emp, "/employee/regularization")).toBe("/employee/regularization");
     expect(activeHref(admin, "/admin/reports")).toBe("/admin/reports");
   });
 
@@ -47,20 +42,18 @@ describe("activeHref", () => {
   });
 
   it("returns null when nothing matches", () => {
-    expect(activeHref(emp, "/super-admin")).toBeNull();
+    expect(activeHref(emp, "/admin")).toBeNull();
   });
 
   it("never reports more than one active item", () => {
     for (const path of [
       "/employee",
       "/employee/history",
-      "/employee/leave",
       "/admin",
       "/admin/sites",
       "/admin/schedules",
-      "/manager/approvals",
     ]) {
-      const nav = path.startsWith("/manager") ? getNav("manager") : path.startsWith("/admin") ? admin : emp;
+      const nav = path.startsWith("/admin") ? admin : emp;
       const active = activeHref(nav, path);
       const count = nav.filter((i) => i.href === active).length;
       expect(count).toBe(1);

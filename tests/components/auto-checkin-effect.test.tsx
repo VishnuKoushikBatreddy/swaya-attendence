@@ -19,6 +19,7 @@ const h = vi.hoisted(() => ({
   coords: { latitude: 0, longitude: 0, accuracy: 5 },
   locationFails: false,
   enqueued: [] as any[],
+  trackerActive: [] as boolean[],
 }));
 
 vi.mock("@/lib/geolocation", () => ({
@@ -42,7 +43,12 @@ vi.mock("@/lib/offline-queue", () => ({
   replayQueue: vi.fn(async () => 0),
 }));
 vi.mock("@/components/ui/toaster", () => ({ toast: vi.fn() }));
-vi.mock("@/components/geo/LocationTracker", () => ({ LocationTracker: () => null }));
+vi.mock("@/components/geo/LocationTracker", () => ({
+  LocationTracker: (props: any) => {
+    h.trackerActive.push(props.active);
+    return null;
+  },
+}));
 vi.mock("next-auth/react", () => ({
   useSession: () => ({ data: { user: { name: "Alice" } }, update: vi.fn() }),
 }));
@@ -66,7 +72,6 @@ const todayPayload = (over: Partial<any> = {}) => ({
       expectedStartAt: new Date(NOW - 60 * 60_000).toISOString(),
       expectedEndAt: new Date(NOW + 60 * 60_000).toISOString(),
     },
-    leave: null,
     pingIntervalMs: 180_000,
     autoCheckIn: { enabled: true, pollMs: 60_000, graceMinutes: 10 },
     ...over,
@@ -100,6 +105,7 @@ beforeEach(() => {
   h.coords = { ...NEAR };
   h.locationFails = false;
   h.enqueued = [];
+  h.trackerActive = [];
   vi.stubGlobal("navigator", {
     ...navigator,
     serviceWorker: undefined,
@@ -173,12 +179,6 @@ describe("auto check-in effect", () => {
     expect(checkInCalls(calls)).toHaveLength(0);
   });
 
-  it("does NOT check in on approved leave", async () => {
-    const calls = installFetch(todayPayload({ leave: { leaveType: "casual" } }));
-    render(<EmployeePage />);
-    await new Promise((r) => setTimeout(r, 800));
-    expect(checkInCalls(calls)).toHaveLength(0);
-  });
 
   it("does NOT check in when disabled server-side", async () => {
     const calls = installFetch(
@@ -212,5 +212,66 @@ describe("auto check-in effect", () => {
     render(<EmployeePage />);
     await new Promise((r) => setTimeout(r, 900));
     expect(h.enqueued).toHaveLength(0);
+  });
+
+  // ── Tracking window ───────────────────────────────────────────────────────
+  // Location is collected during the scheduled shift only, not for as long as a
+  // session happens to stay open.
+
+  it("tracks while checked in during the shift", async () => {
+    installFetch(
+      todayPayload({ sessions: [{ status: "active", checkInAt: new Date(NOW - 3600_000) }] })
+    );
+    render(<EmployeePage />);
+    await waitFor(() => expect(h.trackerActive.some((a) => a === true)).toBe(true), {
+      timeout: 4000,
+    });
+  });
+
+  it("does NOT track after the shift has ended, even with the session still open", async () => {
+    // The exact case: nothing has closed the session yet, but the shift is over
+    // and there is no reason to keep the GPS awake.
+    installFetch(
+      todayPayload({
+        sessions: [{ status: "active", checkInAt: new Date(NOW - 9 * 3600_000) }],
+        schedule: {
+          isWorkingDay: true,
+          expectedStartAt: new Date(NOW - 9 * 3600_000).toISOString(),
+          expectedEndAt: new Date(NOW - 60_000).toISOString(),
+        },
+      })
+    );
+    render(<EmployeePage />);
+    await new Promise((r) => setTimeout(r, 900));
+    expect(h.trackerActive.every((a) => a === false)).toBe(true);
+  });
+
+  it("does NOT track before the shift window opens", async () => {
+    installFetch(
+      todayPayload({
+        sessions: [{ status: "active", checkInAt: new Date(NOW - 60_000) }],
+        schedule: {
+          isWorkingDay: true,
+          expectedStartAt: new Date(NOW + 3 * 3600_000).toISOString(),
+          expectedEndAt: new Date(NOW + 8 * 3600_000).toISOString(),
+        },
+      })
+    );
+    render(<EmployeePage />);
+    await new Promise((r) => setTimeout(r, 900));
+    expect(h.trackerActive.every((a) => a === false)).toBe(true);
+  });
+
+  it("tracks all day when there is no schedule to bound it", async () => {
+    installFetch(
+      todayPayload({
+        schedule: null,
+        sessions: [{ status: "active", checkInAt: new Date(NOW - 3600_000) }],
+      })
+    );
+    render(<EmployeePage />);
+    await waitFor(() => expect(h.trackerActive.some((a) => a === true)).toBe(true), {
+      timeout: 4000,
+    });
   });
 });

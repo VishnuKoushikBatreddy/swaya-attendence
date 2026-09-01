@@ -1,5 +1,5 @@
 /**
- * Check-in / check-out event ledger (admin/manager). Returns every check-in and
+ * Check-in / check-out event ledger (admin). Returns every check-in and
  * check-out for a date range, with how it happened — for auditing app behaviour.
  * JSON by default; `?format=csv` to download.
  */
@@ -12,7 +12,7 @@ import { csvEscape } from "@/lib/csv";
 export const dynamic = "force-dynamic";
 
 export const GET = withApi(async (req: NextRequest) => {
-  const session = await requireRole(["admin", "super_admin", "manager"]);
+  const session = await requireRole(["admin"]);
   const url = new URL(req.url);
   const from = url.searchParams.get("from") || "";
   const to = url.searchParams.get("to") || "";
@@ -66,19 +66,25 @@ export const GET = withApi(async (req: NextRequest) => {
     ];
     const lines = [header.join(",")];
     for (const r of rows) {
+      // Every cell escaped, not just the name — employeeCode is admin-supplied
+      // free text and could otherwise carry a formula or an alignment-breaking
+      // comma. Numbers pass through so csvEscape's leading-"-" guard cannot turn
+      // a negative latitude into text.
       lines.push([
         r.workDate,
         r.at ? new Date(r.at).toISOString() : "",
         r.type,
         r.source,
         r.employeeCode || "",
-        csvEscape(r.employeeName || ""),
+        r.employeeName || "",
         r.lat ?? "",
         r.lng ?? "",
         r.accuracyMeters ?? "",
         r.distanceFromSiteMeters ?? "",
         r.sessionStatus || "",
-      ].join(","));
+      ]
+        .map((cell) => (typeof cell === "number" ? String(cell) : csvEscape(String(cell ?? ""))))
+        .join(","));
     }
     return new Response(lines.join("\n"), {
       headers: {

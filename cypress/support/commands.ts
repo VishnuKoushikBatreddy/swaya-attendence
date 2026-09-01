@@ -5,7 +5,7 @@
 declare global {
   namespace Cypress {
     interface Chainable {
-      loginAs(role: "admin" | "manager" | "employee" | "super_admin", email?: string, password?: string): Chainable<void>;
+      loginAs(role: "admin" | "employee", email?: string, password?: string): Chainable<void>;
       mockGeolocation(lat: number, lng: number, accuracy?: number, path?: string): Chainable<void>;
       setGeolocation(lat: number, lng: number, accuracy?: number, path?: string): Chainable<void>;
       logout(): Chainable<void>;
@@ -16,9 +16,7 @@ declare global {
 
 const CREDENTIALS: Record<string, { email: string; password: string }> = {
   admin: { email: "admin@demo.com", password: "password123" },
-  manager: { email: "manager@demo.com", password: "password123" },
   employee: { email: "alice@demo.com", password: "password123" },
-  super_admin: { email: "super@demo.com", password: "password123" },
 };
 
 type Coords = {
@@ -60,9 +58,7 @@ function stubGeolocation(win: Cypress.AUTWindow, lat: number, lng: number, accur
 }
 
 const ROLE_HOME: Record<string, string> = {
-  super_admin: "/super-admin",
   admin: "/admin",
-  manager: "/manager",
   employee: "/employee",
 };
 

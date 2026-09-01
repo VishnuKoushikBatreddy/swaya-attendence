@@ -2,6 +2,7 @@
  * Zod validators — shared by API routes and client forms.
  */
 import { z } from "zod";
+import { ROLES } from "./roles";
 
 export const SignupSchema = z.object({
   companyName: z.string().min(2).max(120),
@@ -42,6 +43,14 @@ export const PingBatchSchema = z.object({
   pings: z.array(CheckInSchema.partial({ capturedAt: true })).min(1).max(500),
 });
 
+/**
+ * Same batch, but carrying a native token instead of relying on a session
+ * cookie — LocationTrackingService has no WebView and therefore no cookie.
+ */
+export const NativePingBatchSchema = PingBatchSchema.extend({
+  token: z.string().min(10).max(2000),
+});
+
 export const SiteSchema = z.object({
   name: z.string().min(1).max(200),
   address: z.string().max(500).optional(),
@@ -68,8 +77,7 @@ export const EmployeeCreateSchema = z.object({
   employeeCode: z.string().max(40).optional(),
   department: z.string().max(80).optional(),
   designation: z.string().max(80).optional(),
-  role: z.enum(["admin", "employee"]).default("employee"),
-  managerId: z.string().optional().nullable(),
+  role: z.enum(ROLES).default("employee"),
   joiningDate: z.string().optional(),
   siteIds: z.array(z.string()).optional(),
 });
@@ -91,7 +99,6 @@ export const ScheduleRangeSchema = z.object({
   toDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   // Days that should NOT require a check-in.
   skipSundays: z.boolean().default(true),
-  skipHolidays: z.boolean().default(true),
   entries: z
     .array(
       z.object({
@@ -103,32 +110,6 @@ export const ScheduleRangeSchema = z.object({
     .min(1),
 });
 
-export const RegularizationCreateSchema = z.object({
-  attendanceDayId: z.string(),
-  requestType: z.enum([
-    "forgot_check_in",
-    "forgot_check_out",
-    "gps_issue",
-    "outside_site_reason",
-    "manual_correction",
-  ]),
-  reason: z.string().min(5).max(2000),
-  requestedCheckInAt: z.string().optional(),
-  requestedCheckOutAt: z.string().optional(),
-});
-
-export const LeaveCreateSchema = z.object({
-  leaveType: z.enum(["casual", "sick", "paid", "unpaid", "other"]),
-  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  reason: z.string().max(1000).optional(),
-});
-
-export const HolidaySchema = z.object({
-  name: z.string().min(1).max(120),
-  holidayDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-});
-
 export const GeofenceEventSchema = z.object({
   token: z.string().min(10).max(2000),
   transition: z.enum(["ENTER", "EXIT"]),
@@ -136,9 +117,4 @@ export const GeofenceEventSchema = z.object({
   lng: z.number().gte(-180).lte(180),
   accuracy: z.number().min(0).max(10_000).optional(),
   capturedAt: z.string().datetime().optional(),
-});
-
-export const ReviewSchema = z.object({
-  status: z.enum(["approved", "rejected"]),
-  reviewerNote: z.string().max(2000).optional(),
 });

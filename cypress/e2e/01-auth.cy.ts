@@ -25,12 +25,6 @@ describe("Authentication", () => {
     cy.contains("Overview", { timeout: 10000 });
   });
 
-  it("logs in as manager and lands on /manager", () => {
-    cy.loginAs("manager");
-    cy.url().should("include", "/manager");
-    cy.contains("Team", { timeout: 10000 });
-  });
-
   it("rejects wrong password and stays on /login", () => {
     cy.visit("/login");
     cy.get('input[type="email"]').type("alice@demo.com");
@@ -47,15 +41,10 @@ describe("Authentication", () => {
     cy.url({ timeout: 10000 }).should("include", "/employee");
   });
 
-  it("blocks employee from /manager (middleware role guard)", () => {
-    cy.loginAs("employee");
-    cy.visit("/manager", { failOnStatusCode: false });
-    cy.url({ timeout: 10000 }).should("include", "/employee");
+  it("blocks admin from /employee (each role owns one area)", () => {
+    cy.loginAs("admin");
+    cy.visit("/employee", { failOnStatusCode: false });
+    cy.url({ timeout: 10000 }).should("include", "/admin");
   });
 
-  it("blocks manager from /admin (middleware role guard)", () => {
-    cy.loginAs("manager");
-    cy.visit("/admin", { failOnStatusCode: false });
-    cy.url({ timeout: 10000 }).should("include", "/manager");
-  });
 });

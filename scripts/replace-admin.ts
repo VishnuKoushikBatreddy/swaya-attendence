@@ -5,7 +5,7 @@
  *   npx tsx scripts/replace-admin.ts --apply    # actually deletes + creates
  *
  * Deletes every user with role "admin" and creates a fresh admin in the same
- * company. super_admin accounts are left untouched (reported only).
+ * company.
  */
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
@@ -65,7 +65,6 @@ async function main() {
   const companies = await Company.find().lean();
   // Models are loosely typed (see src/models/index.ts), so annotate locally.
   const admins: any[] = await User.find({ role: "admin" }).lean();
-  const superAdmins = await User.find({ role: "super_admin" }).lean();
 
   console.log(`\nCompanies (${companies.length}):`);
   for (const c of companies) console.log(`  - ${c.name}  [${c._id}]`);
@@ -74,21 +73,7 @@ async function main() {
   for (const a of admins) {
     console.log(`  - ${a.email}  "${a.fullName}"  company=${a.companyId}  active=${a.isActive}`);
   }
-  if (superAdmins.length) {
-    console.log(`\nsuper_admin accounts (left untouched, ${superAdmins.length}):`);
-    for (const s of superAdmins) console.log(`  - ${s.email}`);
-  }
 
-  // Anything referencing an admin as their manager would be left dangling.
-  const orphanCount = admins.length
-    ? await User.countDocuments({ managerId: { $in: admins.map((a) => a._id) } })
-    : 0;
-  if (orphanCount > 0) {
-    console.log(
-      `\n  WARNING: ${orphanCount} user(s) have one of these admins as managerId; ` +
-        `their managerId will be set to null.`
-    );
-  }
 
   // Pick the company for the new admin.
   const companyIds = [...new Set(admins.map((a) => String(a.companyId)))];
@@ -135,7 +120,6 @@ async function main() {
 
   if (admins.length) {
     const ids = admins.map((a) => a._id);
-    await User.updateMany({ managerId: { $in: ids } }, { $set: { managerId: null } });
     const del = await User.deleteMany({ _id: { $in: ids } });
     console.log(`\nDeleted ${del.deletedCount} admin account(s).`);
   }

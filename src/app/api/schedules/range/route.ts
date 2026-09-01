@@ -2,12 +2,12 @@
  * Assign a shift + site to employees across a date range.
  *
  * For each date in [fromDate, toDate], an EmployeeSchedule is upserted per
- * employee. Sundays (when skipSundays) and company holidays (when skipHolidays)
+ * employee. Sundays (when skipSundays)
  * are marked `isWorkingDay: false` so those days do not require a check-in.
  */
 import { NextRequest } from "next/server";
 import { Types } from "mongoose";
-import { EmployeeSchedule, ShiftTemplate, Company, Holiday, WorkSite, User } from "@/models";
+import { EmployeeSchedule, ShiftTemplate, Company, WorkSite, User } from "@/models";
 import { requireRole, ok, fail, withApi } from "@/lib/api-helpers";
 import { ScheduleRangeSchema } from "@/lib/validators";
 import { enumerateWorkDates, isSunday, zonedDateTimeToUtc } from "@/lib/workdate";
@@ -16,7 +16,7 @@ import { resolveShiftEnd } from "@/lib/attendance-logic";
 const MAX_OPERATIONS = 10_000; // guard against accidental huge writes
 
 export const POST = withApi(async (req: NextRequest) => {
-  const session = await requireRole(["admin", "super_admin", "manager"]);
+  const session = await requireRole(["admin"]);
   const body = ScheduleRangeSchema.parse(await req.json());
 
   if (body.toDate < body.fromDate) {
@@ -36,9 +36,8 @@ export const POST = withApi(async (req: NextRequest) => {
   const timezone = company?.timezone || "Asia/Kolkata";
 
   const valid = (v: string) => Types.ObjectId.isValid(v);
-  // Holidays in range + ownership sets (employees/sites/shifts of THIS company).
-  const [holidayDocs, emps, sites, shifts] = await Promise.all([
-    Holiday.find({ companyId, holidayDate: { $gte: body.fromDate, $lte: body.toDate } }).lean(),
+  // Ownership sets (employees/sites/shifts of THIS company).
+  const [emps, sites, shifts] = await Promise.all([
     User.find({ companyId, _id: { $in: body.entries.map((e) => e.employeeId).filter(valid) } })
       .select("_id")
       .lean(),
@@ -47,7 +46,6 @@ export const POST = withApi(async (req: NextRequest) => {
       .lean(),
     ShiftTemplate.find({ companyId, _id: { $in: body.entries.map((e) => e.shiftTemplateId).filter(valid) } }).lean(),
   ]);
-  const holidaySet = new Set(holidayDocs.map((h: { holidayDate: string }) => h.holidayDate));
   const validEmp = new Set(emps.map((u: any) => String(u._id)));
   const validSite = new Set(sites.map((s: any) => String(s._id)));
   const shiftMap = new Map<string, any>(shifts.map((s: any) => [String(s._id), s]));
@@ -63,9 +61,7 @@ export const POST = withApi(async (req: NextRequest) => {
     const shift = shiftMap.get(e.shiftTemplateId);
 
     for (const date of dates) {
-      const offForSunday = body.skipSundays && isSunday(date);
-      const offForHoliday = body.skipHolidays && holidaySet.has(date);
-      const isWorkingDay = !offForSunday && !offForHoliday;
+      const isWorkingDay = !(body.skipSundays && isSunday(date));
       isWorkingDay ? workingDays++ : offDays++;
 
       const set: any = {
@@ -109,6 +105,5 @@ export const POST = withApi(async (req: NextRequest) => {
     employees: body.entries.length,
     workingDays,
     offDays,
-    holidaysInRange: holidayDocs.length,
   });
 });

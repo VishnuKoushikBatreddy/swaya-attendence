@@ -14,9 +14,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn, formatDuration, formatTimeWithSeconds } from "@/lib/utils";
-import { RefreshCw, Users, CheckCircle2, MapPinOff, AlertCircle } from "lucide-react";
+import { RefreshCw, Users, CheckCircle2, MapPinOff, WifiOff } from "lucide-react";
 
 const POLL_MS = 20_000;
+
+type Connectivity = "live" | "stale" | "offline";
 
 type LiveRow = {
   id: string;
@@ -26,6 +28,7 @@ type LiveRow = {
   department: string | null;
   checkedIn: boolean;
   checkedInAt: string | null;
+  connectivity: Connectivity | null;
   siteName: string | null;
   lastSeenAt: string | null;
   lastSeenMinutesAgo: number | null;
@@ -41,9 +44,38 @@ type LiveRow = {
 
 type LiveData = {
   workDate: string;
-  summary: { total: number; checkedIn: number; outsideGeofence: number; flagged: number };
+  summary: {
+    total: number;
+    checkedIn: number;
+    outsideGeofence: number;
+    offline: number;
+    flagged: number;
+  };
   employees: LiveRow[];
 };
+
+/** Metres under a kilometre, kilometres above — 3200m reads badly on a row. */
+function formatDistance(metres: number): string {
+  return metres >= 1000 ? `${(metres / 1000).toFixed(1)} km` : `${Math.round(metres)} m`;
+}
+
+/** Inside / outside / offline, in plain words. */
+function presenceLabel(r: LiveRow): string {
+  if (r.connectivity === "offline") return "Offline";
+  if (r.isInsideGeofence === true) return "On site";
+  if (r.isInsideGeofence === false) {
+    return r.distanceFromSiteMeters != null
+      ? `Outside site (${formatDistance(r.distanceFromSiteMeters)})`
+      : "Outside site";
+  }
+  return "Awaiting location";
+}
+
+function lastSeenLabel(r: LiveRow): string {
+  if (r.lastSeenMinutesAgo == null) return "no location yet";
+  if (r.lastSeenMinutesAgo === 0) return "updated just now";
+  return `updated ${r.lastSeenMinutesAgo}m ago`;
+}
 
 /** Ticking "1h 23m" for an open session, so the row feels live between polls. */
 function elapsed(sinceIso: string, nowMs: number): string {
@@ -121,7 +153,7 @@ export default function AdminLivePage() {
     { title: "Employees", value: data?.summary.total, icon: Users, color: "text-primary" },
     { title: "Checked in now", value: data?.summary.checkedIn, icon: CheckCircle2, color: "text-success" },
     { title: "Away from site", value: data?.summary.outsideGeofence, icon: MapPinOff, color: "text-warning" },
-    { title: "Flagged today", value: data?.summary.flagged, icon: AlertCircle, color: "text-destructive" },
+    { title: "Offline", value: data?.summary.offline, icon: WifiOff, color: "text-destructive" },
   ];
 
   return (
@@ -185,15 +217,23 @@ export default function AdminLivePage() {
             <ul className="divide-y">
               {sorted.map((r) => (
                 <li key={r.id} className="flex flex-wrap items-center gap-3 p-4 sm:flex-nowrap">
-                  {/* Presence dot — the fastest thing to scan down the list. */}
+                  {/* Presence dot — the fastest thing to scan down the list. It
+                      reflects CONNECTIVITY, not just an open session: a green dot
+                      for a phone that died an hour ago was actively misleading. */}
                   <span className="relative flex h-2.5 w-2.5 flex-shrink-0" aria-hidden>
-                    {r.checkedIn && (
+                    {r.connectivity === "live" && (
                       <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-75" />
                     )}
                     <span
                       className={cn(
                         "relative inline-flex h-2.5 w-2.5 rounded-full",
-                        r.checkedIn ? "bg-success" : "bg-muted-foreground/40"
+                        !r.checkedIn
+                          ? "bg-muted-foreground/40"
+                          : r.connectivity === "live"
+                            ? "bg-success"
+                            : r.connectivity === "stale"
+                              ? "bg-warning"
+                              : "bg-destructive"
                       )}
                     />
                   </span>
@@ -210,11 +250,12 @@ export default function AdminLivePage() {
                     <p className="truncate text-xs text-muted-foreground">
                       {r.checkedIn ? (
                         <>
+                          {presenceLabel(r)}
+                          {" · "}
                           {r.siteName ?? "Unknown site"}
                           {r.checkedInAt ? ` · since ${formatTimeWithSeconds(r.checkedInAt)}` : ""}
-                          {r.lastSeenMinutesAgo != null
-                            ? ` · last seen ${r.lastSeenMinutesAgo === 0 ? "just now" : `${r.lastSeenMinutesAgo}m ago`}`
-                            : " · no location yet"}
+                          {" · "}
+                          {lastSeenLabel(r)}
                         </>
                       ) : r.lastCheckOutAt ? (
                         `Checked out at ${formatTimeWithSeconds(r.lastCheckOutAt)}`
@@ -225,11 +266,17 @@ export default function AdminLivePage() {
                   </div>
 
                   <div className="flex flex-shrink-0 items-center gap-2">
-                    {r.checkedIn && r.isInsideGeofence === false && (
+                    {r.checkedIn && r.connectivity === "offline" && (
+                      <Badge variant="destructive" className="gap-1">
+                        <WifiOff className="h-3 w-3" />
+                        Offline
+                      </Badge>
+                    )}
+                    {r.checkedIn && r.connectivity !== "offline" && r.isInsideGeofence === false && (
                       <Badge variant="warning" className="gap-1">
                         <MapPinOff className="h-3 w-3" />
                         {r.distanceFromSiteMeters != null
-                          ? `${r.distanceFromSiteMeters}m away`
+                          ? `${formatDistance(r.distanceFromSiteMeters)} away`
                           : "Away"}
                       </Badge>
                     )}

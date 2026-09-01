@@ -9,6 +9,9 @@ const cfg = vi.hoisted(() => ({ secret: "", nodeEnv: "test" }));
 vi.mock("@/lib/db", () => ({ connectDB: vi.fn(async () => ({})) }));
 vi.mock("@/lib/attendance-service", () => ({
   autoCloseEndedShifts: vi.fn(async () => 3),
+  // The cron also sweeps for phones that stopped reporting — offline detection
+  // has to be server-side, since a dead client cannot announce itself.
+  notifyOfflineEmployees: vi.fn(async () => 1),
 }));
 vi.mock("@/lib/env", async (orig) => {
   const actual: any = await orig();
@@ -25,7 +28,7 @@ vi.mock("@/lib/env", async (orig) => {
 });
 
 import { GET as cron } from "@/app/api/cron/close-shifts/route";
-import { autoCloseEndedShifts } from "@/lib/attendance-service";
+import { autoCloseEndedShifts, notifyOfflineEmployees } from "@/lib/attendance-service";
 
 const req = (authHeader?: string) =>
   ({
@@ -59,8 +62,9 @@ describe("GET /api/cron/close-shifts", () => {
     const res = await cron(req("Bearer topsecret"));
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json).toEqual({ ok: true, data: { closed: 3 } });
+    expect(json).toEqual({ ok: true, data: { closed: 3, offlineNotified: 1 } });
     expect(autoCloseEndedShifts).toHaveBeenCalledTimes(1);
+    expect(notifyOfflineEmployees).toHaveBeenCalledTimes(1);
     expect(res.headers.get("cache-control")).toContain("no-store");
   });
 

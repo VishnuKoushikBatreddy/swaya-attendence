@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { AttendanceDay, AttendanceSession, WorkSite, EmployeeSchedule, ShiftTemplate, LeaveRequest } from "@/models";
+import { AttendanceDay, AttendanceSession, WorkSite, EmployeeSchedule, ShiftTemplate } from "@/models";
 import { requireAuth, ok, withApi } from "@/lib/api-helpers";
 import { liveTotalsForActiveSession } from "@/lib/attendance-service";
 import { getCompanyTimezone } from "@/lib/company";
@@ -14,16 +14,9 @@ export const GET = withApi(async (_req: NextRequest) => {
   const timezone = await getCompanyTimezone(session.user.companyId);
   const workDate = todayWorkDate(timezone);
 
-  // The day, the approved-leave check, and the live totals are independent — run
-  // them in parallel instead of serially.
-  const [day, leave, live] = await Promise.all([
+  // The day and the live totals are independent — run them in parallel.
+  const [day, live] = await Promise.all([
     AttendanceDay.findOne({ employeeId: session.user.id, workDate }).lean(),
-    LeaveRequest.findOne({
-      employeeId: session.user.id,
-      status: "approved",
-      startDate: { $lte: workDate },
-      endDate: { $gte: workDate },
-    }).lean(),
     liveTotalsForActiveSession(session.user.id),
   ]);
 
@@ -62,7 +55,6 @@ export const GET = withApi(async (_req: NextRequest) => {
     site: displaySite,
     schedule,
     shift,
-    leave,
     pingIntervalMs: env.PING_INTERVAL_MS,
     // Auto check-in config, delivered rather than bundled so it can be turned
     // off server-side without redeploying the client.

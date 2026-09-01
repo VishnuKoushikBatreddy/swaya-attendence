@@ -35,14 +35,10 @@ export const GET = withApi(async (req: NextRequest) => {
   if (siteId) filter.siteId = new Types.ObjectId(siteId);
   if (employeeIdParam) filter.employeeId = new Types.ObjectId(employeeIdParam);
 
-  // Role scoping
+  // Role scoping: an employee only ever sees their own days; an admin sees the
+  // whole company (already constrained by companyId above).
   if (session.user.role === "employee") {
     filter.employeeId = new Types.ObjectId(session.user.id);
-  } else if (session.user.role === "manager") {
-    const team = await User.find({ managerId: new Types.ObjectId(session.user.id) })
-      .select("_id")
-      .lean();
-    filter.employeeId = { $in: team.map((u: { _id: unknown }) => u._id) };
   }
 
   const days = await AttendanceDay.find(filter).sort({ workDate: -1 }).limit(5000).lean();
@@ -99,6 +95,7 @@ function toCsv(rows: any[]): string {
     "Work (sec)",
     "Inside (sec)",
     "Outside (sec)",
+    "Offline (sec)",
     "Late (min)",
     "Flagged",
     "Flag Reasons",
@@ -106,10 +103,15 @@ function toCsv(rows: any[]): string {
   const lines = [header.join(",")];
   for (const r of rows) {
     lines.push(
+      // EVERY cell goes through csvEscape, not just the two that looked risky.
+      // employeeCode is admin-supplied free text (z.string().max(40), no charset
+      // limit): unescaped it could carry a spreadsheet formula, and a plain comma
+      // in it silently pushed every later column one place along, so "Work (sec)"
+      // read whatever landed in the next cell.
       [
         r.workDate,
         r.employeeCode || "",
-        csvEscape(r.employeeName || ""),
+        r.employeeName || "",
         r.employeeEmail || "",
         r.status,
         r.firstCheckInAt ? new Date(r.firstCheckInAt).toISOString() : "",
@@ -118,10 +120,16 @@ function toCsv(rows: any[]): string {
         r.totalWorkSeconds || 0,
         r.totalInsideSeconds || 0,
         r.totalOutsideSeconds || 0,
+        r.totalOfflineSeconds || 0,
         r.lateByMinutes || 0,
         r.isFlagged ? "yes" : "no",
-        csvEscape((r.flagReasons || []).join("; ")),
-      ].join(",")
+        (r.flagReasons || []).join("; "),
+      ]
+        // Numbers pass through untouched: csvEscape prefixes anything starting
+        // with "-" to defuse formulas, which would turn a negative value into
+        // the text '-5. Every non-numeric cell is escaped.
+        .map((cell) => (typeof cell === "number" ? String(cell) : csvEscape(String(cell ?? ""))))
+        .join(",")
     );
   }
   return lines.join("\n");

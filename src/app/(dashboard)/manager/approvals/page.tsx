@@ -1,5 +1,0 @@
-import { ApprovalsPanel } from "@/components/approvals/ApprovalsPanel";
-
-export default function ManagerApprovalsPage() {
-  return <ApprovalsPanel />;
-}

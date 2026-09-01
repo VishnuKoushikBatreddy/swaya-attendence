@@ -16,6 +16,7 @@ import {
   ShiftTemplate,
   User,
   WorkSite,
+  Notification,
 } from "@/models";
 import { haversineDistanceMeters, isInsideGeofence } from "./geo";
 import {
@@ -28,6 +29,8 @@ import {
   clampCheckOut,
   clampEventTimeToNow,
   classifyOutsideForDay,
+  classifyOfflineForDay,
+  deriveIsFlagged,
   resolveDayStatus,
   resolveAutoCheckout,
   shouldGapCheckout,
@@ -41,7 +44,6 @@ import {
 } from "./workdate";
 import { getCompanyTimezone } from "./company";
 import { flagPings, type PingLike } from "./attendance";
-import { sendEmail } from "./email";
 import { env } from "./env";
 import { formatInTimeZone } from "date-fns-tz";
 
@@ -239,7 +241,12 @@ export async function processCheckIn(input: CheckInInput): Promise<CheckInResult
         workDate,
         status: "pending",
       },
-      $set: { isFlagged: false },
+      // NOTE: isFlagged is deliberately NOT reset here. A new day gets `false`
+      // from the schema default; an EXISTING day must keep whatever its reasons
+      // justify. Clearing it unconditionally meant the second check-in of a day
+      // (i.e. after any lunch break) wiped a flag raised that morning while
+      // leaving the reason in flagReasons — so the two disagreed, and reports,
+      // which read isFlagged, quietly lost the day.
     },
     { upsert: true, new: true }
   );
@@ -324,15 +331,18 @@ export async function processCheckIn(input: CheckInInput): Promise<CheckInResult
   } else {
     day.status = "present";
   }
+  const checkInReasons = new Set<string>(day.flagReasons || []);
   if (input.isMockLocation) {
-    day.isFlagged = true;
-    day.flagReasons = Array.from(new Set([...(day.flagReasons || []), "mock_location_at_check_in"]));
+    checkInReasons.add("mock_location_at_check_in");
   }
   if (input.geofenceTriggered) {
     // Audit trail: this check-in came from the coarse native geofence (app was
     // killed), not the precise app-open path. Not a flag, just a marker.
-    day.flagReasons = Array.from(new Set([...(day.flagReasons || []), "geofence_check_in"]));
+    checkInReasons.add("geofence_check_in");
   }
+  day.flagReasons = Array.from(checkInReasons);
+  // Derived, never assigned directly — see deriveIsFlagged.
+  day.isFlagged = deriveIsFlagged(checkInReasons);
   await day.save();
 
   // Ledger: record the check-in event (manual vs native-geofence ENTER).
@@ -520,47 +530,172 @@ export async function processGeofenceEnter(opts: {
 }
 
 /**
- * Best-effort email to the company's admins when an employee checks out, so they
- * can follow up (e.g. call the employee). Includes name, code, phone, time, reason.
+ * ADMIN NOTIFICATIONS.
+ *
+ * These used to be SMTP emails. They are now rows in the `notifications`
+ * collection, read from the admin dashboard, because delivery depended on SMTP
+ * credentials that were never configured — every alert was silently serialised
+ * and dropped by Nodemailer's jsonTransport. A database write cannot fail
+ * quietly in that way, and the history stays queryable.
+ *
+ * Still best-effort: a notification must never fail a check-in or a ping batch.
  */
-async function notifyAdminOfCheckout(session: any, reason?: string) {
-  const [employee, admins, timezone] = await Promise.all([
-    User.findById(session.employeeId).lean(),
-    User.find({ companyId: session.companyId, role: "admin", isActive: true })
-      .select("email")
-      .lean(),
-    getCompanyTimezone(String(session.companyId)),
-  ]);
-  if (!employee || !admins.length) return;
+async function createNotification(n: {
+  companyId: any;
+  type: "site_exit" | "offline" | "check_out" | "check_in";
+  severity?: "info" | "warning" | "critical";
+  title: string;
+  body: string;
+  employee?: any;
+  siteId?: any;
+  siteName?: string;
+  sessionId?: any;
+  meta?: Record<string, unknown>;
+  occurredAt: Date;
+  dedupeKey?: string;
+}) {
+  const doc = {
+    // Not cast explicitly: the schema declares these as ObjectId and Mongoose
+    // casts on create. An explicit `new Types.ObjectId(...)` only adds a throw
+    // path for a value that is already an ObjectId everywhere it is called from.
+    companyId: n.companyId,
+    type: n.type,
+    severity: n.severity ?? "info",
+    title: n.title,
+    body: n.body,
+    employeeId: n.employee?._id ?? null,
+    employeeName: n.employee?.fullName ?? "",
+    employeeCode: n.employee?.employeeCode ?? "",
+    employeePhone: n.employee?.phone ?? "",
+    siteId: n.siteId ?? null,
+    siteName: n.siteName ?? "",
+    sessionId: n.sessionId ?? null,
+    meta: n.meta ?? {},
+    occurredAt: n.occurredAt,
+    readBy: [],
+    ...(n.dedupeKey ? { dedupeKey: n.dedupeKey } : {}),
+  };
+  try {
+    await Notification.create(doc);
+  } catch (err: any) {
+    // 11000 = duplicate dedupeKey: the same alert was already recorded, which is
+    // the guard working, not a failure.
+    if (err?.code !== 11000) throw err;
+  }
+}
 
-  const when = formatInTimeZone(new Date(session.checkOutAt), timezone, "yyyy-MM-dd HH:mm");
+/** Local-time formatter shared by the notification builders. */
+async function inCompanyTime(companyId: any, at: Date): Promise<string> {
+  const tz = await getCompanyTimezone(String(companyId));
+  return formatInTimeZone(at, tz, "yyyy-MM-dd HH:mm");
+}
+
+/** An employee checked out (manually or automatically). */
+async function notifyAdminOfCheckout(session: any, reason?: string) {
+  const employee = await User.findById(session.employeeId).lean();
+  if (!employee) return;
+
+  const when = await inCompanyTime(session.companyId, new Date(session.checkOutAt));
   const reasonLabel =
     reason === "auto_checkout_left_site"
-      ? "Automatic — left the site"
+      ? "Automatic - left the site"
       : reason === "auto_checkout_shift_ended"
-        ? "Automatic — shift ended"
+        ? "Automatic - shift ended"
         : reason === "auto_checkout_ping_gap"
-          ? "Automatic — app closed / tracking lost"
+          ? "Automatic - app closed / tracking lost"
           : reason === "auto_checkout_geofence_exit"
-            ? "Automatic — left the site (geofence, app closed)"
+            ? "Automatic - left the site (geofence, app closed)"
             : "Manual check-out";
 
-  const html = `
-    <p><b>${employee.fullName}</b> has checked out.</p>
-    <ul>
-      <li>Name: ${employee.fullName}</li>
-      <li>Employee code: ${employee.employeeCode || "—"}</li>
-      <li>Phone: ${employee.phone || "—"}</li>
-      <li>Time: ${when}</li>
-      <li>Type: ${reasonLabel}</li>
-    </ul>
-    <p>You may want to call them to follow up.</p>`;
+  await createNotification({
+    companyId: session.companyId,
+    type: "check_out",
+    severity: "info",
+    title: `${employee.fullName} checked out`,
+    body: `${reasonLabel} at ${when}.`,
+    employee,
+    siteId: session.siteId,
+    sessionId: session._id,
+    meta: { reason: reason ?? "manual", reasonLabel, checkOutAt: session.checkOutAt },
+    occurredAt: new Date(session.checkOutAt),
+    // One check-out notification per session, however many times finalize runs.
+    dedupeKey: `check_out:${String(session._id)}`,
+  });
+}
 
-  await Promise.all(
-    admins.map((a: any) =>
-      sendEmail({ to: a.email, subject: `${employee.fullName} checked out`, html })
-    )
-  );
+/**
+ * An employee left their site while still checked in.
+ *
+ * Raised at the boundary crossing rather than at check-out: someone can wander
+ * off and come back without ever being checked out, so waiting for the check-out
+ * would miss it entirely.
+ */
+async function notifyAdminOfSiteExit(opts: {
+  session: any;
+  distanceMeters: number;
+  at: Date;
+}) {
+  if (!env.NOTIFY_ADMIN_ON_SITE_EXIT) return;
+  const [employee, site] = await Promise.all([
+    User.findById(opts.session.employeeId).lean(),
+    WorkSite.findById(opts.session.siteId).select("name").lean(),
+  ]);
+  if (!employee) return;
+
+  const when = await inCompanyTime(opts.session.companyId, opts.at);
+  const metres = Math.round(opts.distanceMeters);
+
+  await createNotification({
+    companyId: opts.session.companyId,
+    type: "site_exit",
+    severity: "warning",
+    title: `${employee.fullName} left the site`,
+    body: `Left ${site?.name || "the site"} at ${when} and is ${metres} m away, but is still checked in.`,
+    employee,
+    siteId: opts.session.siteId,
+    siteName: site?.name || "",
+    sessionId: opts.session._id,
+    meta: { distanceMeters: metres, leftAt: opts.at },
+    occurredAt: opts.at,
+    // One per crossing: the exit instant makes each excursion distinct.
+    dedupeKey: `site_exit:${String(opts.session._id)}:${opts.at.getTime()}`,
+  });
+}
+
+/**
+ * A checked-in employee's phone has stopped reporting.
+ *
+ * Nothing on the device can raise this: if the app is gone, no code runs to say
+ * so. It is detected by the recurring sweep and recorded here with the last
+ * known position, so an admin has something to act on.
+ */
+async function notifyAdminOfOffline(opts: {
+  session: any;
+  lastSeenAt: Date | null;
+  minutesSilent: number;
+}) {
+  if (!env.NOTIFY_ADMIN_ON_OFFLINE) return;
+  const employee = await User.findById(opts.session.employeeId).lean();
+  if (!employee) return;
+
+  const lastSeen = opts.lastSeenAt
+    ? await inCompanyTime(opts.session.companyId, opts.lastSeenAt)
+    : "never reported";
+
+  await createNotification({
+    companyId: opts.session.companyId,
+    type: "offline",
+    severity: "critical",
+    title: `${employee.fullName} is offline`,
+    body: `No location received for ${opts.minutesSilent} minutes (last seen ${lastSeen}). Their session is still open.`,
+    employee,
+    siteId: opts.session.siteId,
+    sessionId: opts.session._id,
+    meta: { minutesSilent: opts.minutesSilent, lastSeenAt: opts.lastSeenAt },
+    occurredAt: new Date(),
+    // The sweep already guards with offlineNotifiedAt; this makes a retry safe.
+    dedupeKey: `offline:${String(opts.session._id)}:${opts.lastSeenAt?.getTime() ?? 0}`,
+  });
 }
 
 /**
@@ -679,25 +814,36 @@ async function finalizeSession(opts: {
     day.totalInsideSeconds = totals.totalInsideSeconds;
     day.totalOutsideSeconds = totals.totalOutsideSeconds;
     day.totalBreakSeconds = totals.totalBreakSeconds;
-    day.totalUnaccountedSeconds = totals.totalUnaccountedSeconds;
+    day.totalOfflineSeconds = totals.totalOfflineSeconds;
     day.outsideVisitCount = totals.outsideVisitCount;
     day.breakCount = totals.breakCount;
 
-    const reasons = new Set(day.flagReasons || []);
-    if (outside.flagExcessiveOutside) {
-      day.isFlagged = true;
-      reasons.add("excessive_outside_time");
-    } else {
-      // Re-evaluated on every finalize: a later session can bring the day back
-      // under the threshold, and a flag set by an earlier partial rollup must
-      // not stick once it no longer holds.
-      reasons.delete("excessive_outside_time");
-      if (reasons.size === 0) day.isFlagged = false;
-    }
+    // Both thresholds are re-evaluated on every finalize: a later session can
+    // bring the day back under one, and a flag set by an earlier partial rollup
+    // must not stick once it no longer holds.
+    const offline = classifyOfflineForDay({
+      totalOfflineSeconds: totals.totalOfflineSeconds,
+      totalWorkSeconds: totals.totalWorkSeconds,
+    });
+
+    const reasons = new Set<string>(day.flagReasons || []);
+    const setReason = (reason: string, active: boolean) => {
+      if (active) reasons.add(reason);
+      else reasons.delete(reason);
+    };
+    setReason("excessive_outside_time", outside.flagExcessiveOutside);
+    setReason("excessive_offline_time", offline.flagExcessiveOffline);
+
     if (opts.reason) {
       reasons.add(opts.reason);
     }
     day.flagReasons = Array.from(reasons);
+    // Derived from the reasons, never assigned on its own. The old code only
+    // cleared isFlagged when the reasons list was EMPTY — but benign audit
+    // markers ("auto_checkout_shift_ended", "geofence_check_in") live in that
+    // same list, so any day that had ever auto-closed stayed flagged forever,
+    // long after the real reason was removed.
+    day.isFlagged = deriveIsFlagged(reasons);
 
     // Derived, not mutated — see resolveDayStatus. Mutating meant half_day was a
     // one-way door (3h then 3h more stayed half_day at 6h) and a late day could
@@ -765,7 +911,7 @@ async function recomputeDayTotals(attendanceDayId: any, nowMs?: number) {
     else pingsBySession.set(key, [p]);
   }
 
-  // Pure aggregation (work/inside/outside/break/unaccounted) — see
+  // Pure aggregation (work/inside/outside/break/offline) — see
   // attendance-logic.ts. The DB fetch lives here; the math is unit-tested there.
   return computeDayTotals(sessions, pingsBySession, nowMs ?? Date.now(), {
     maxIntervalMs: env.PING_TRUST_WINDOW_MS,
@@ -864,6 +1010,80 @@ async function closeSessionAtShiftEnd(session: any, shiftEnd: Date) {
  * has already passed. Used by the cron backstop (covers the case where the app
  * was killed and stopped sending pings). Returns how many were closed.
  */
+/**
+ * Notify admins about checked-in employees whose phones have gone silent.
+ *
+ * This has to be a server-side sweep: when tracking stops there is, by
+ * definition, no client left to report it. Nothing else in the system can
+ * distinguish "still working, app running" from "phone died an hour ago".
+ *
+ * Each session alerts at most once (offlineNotifiedAt), and the marker is
+ * cleared as soon as pings resume, so an employee who drops in and out of
+ * coverage generates one alert per outage rather than one per sweep.
+ *
+ * @returns how many admins-notifications were raised this run.
+ */
+export async function notifyOfflineEmployees(nowMs = Date.now()): Promise<number> {
+  await connectDB();
+  if (!env.NOTIFY_ADMIN_ON_OFFLINE) return 0;
+
+  const open = await AttendanceSession.find({
+    status: { $in: ["active", "flagged"] },
+  }).select("_id employeeId companyId siteId checkInAt offlineNotifiedAt");
+  if (!open.length) return 0;
+
+  // Newest ping per open session — one aggregation, not one query per session.
+  const latest = await LocationPing.aggregate([
+    { $match: { sessionId: { $in: open.map((s: any) => s._id) } } },
+    { $sort: { capturedAt: -1 } },
+    { $group: { _id: "$sessionId", capturedAt: { $first: "$capturedAt" } } },
+  ]);
+  const lastSeenBySession = new Map<string, Date>(
+    latest.map((l: any) => [String(l._id), new Date(l.capturedAt)])
+  );
+
+  // Silence AFTER the scheduled shift end is expected, not a fault: the device
+  // deliberately stops tracking when the shift is over (see
+  // isWithinTrackingWindow). Without this, every employee whose session had not
+  // yet been closed would trigger an "offline" alert each evening.
+  const shiftEnds = await getShiftEndsForSessions(open);
+
+  let notified = 0;
+  for (const session of open) {
+    const shiftEnd = shiftEnds.get(String(session._id));
+    if (shiftEnd && nowMs > shiftEnd.getTime()) continue;
+
+    // With no ping at all, silence is measured from check-in.
+    const lastSeen = lastSeenBySession.get(String(session._id)) ?? null;
+    const referenceMs = (lastSeen ?? new Date(session.checkInAt)).getTime();
+    const silentMs = nowMs - referenceMs;
+
+    if (silentMs < env.OFFLINE_AFTER_MS) {
+      // Reporting again: clear the marker so a future outage alerts afresh.
+      if (session.offlineNotifiedAt) {
+        session.offlineNotifiedAt = null;
+        await session.save();
+      }
+      continue;
+    }
+    if (session.offlineNotifiedAt) continue; // already alerted for this outage
+
+    try {
+      await notifyAdminOfOffline({
+        session,
+        lastSeenAt: lastSeen,
+        minutesSilent: Math.floor(silentMs / 60_000),
+      });
+      session.offlineNotifiedAt = new Date(nowMs);
+      await session.save();
+      notified++;
+    } catch {
+      // Leave the marker unset so the next sweep retries the alert.
+    }
+  }
+  return notified;
+}
+
 export async function autoCloseEndedShifts(): Promise<number> {
   await connectDB();
   const sessions = await AttendanceSession.find({
@@ -1126,6 +1346,18 @@ export async function processPings(opts: {
           distanceFromSiteMeters: distance,
           status: "open",
         });
+        // One alert per crossing, not per ping: this branch only runs on the
+        // transition from inside to outside, so a long absence sends a single
+        // email rather than one every few minutes.
+        try {
+          await notifyAdminOfSiteExit({
+            session,
+            distanceMeters: distance,
+            at: capturedAt,
+          });
+        } catch {
+          /* email is best-effort — never block ping processing on it */
+        }
       }
       currentlyInside = effectiveInside;
     }
@@ -1146,12 +1378,15 @@ export async function processPings(opts: {
   if (flags.length) {
     const day = await AttendanceDay.findById(session.attendanceDayId);
     if (day) {
-      day.isFlagged = true;
-      const reasons = new Set(day.flagReasons || []);
+      const reasons = new Set<string>(day.flagReasons || []);
       for (const f of flags) {
         for (const r of f.reasons) reasons.add(r);
       }
       day.flagReasons = Array.from(reasons);
+      // Derived, not asserted: every reason flagPings emits is a real flag, so
+      // this still flags the day — but it keeps isFlagged a pure function of
+      // flagReasons everywhere, which is what stops the two drifting apart.
+      day.isFlagged = deriveIsFlagged(reasons);
       await day.save();
     }
   }
@@ -1237,7 +1472,7 @@ export async function processPings(opts: {
         totalInsideSeconds: totals.totalInsideSeconds,
         totalOutsideSeconds: totals.totalOutsideSeconds,
         totalBreakSeconds: totals.totalBreakSeconds,
-        totalUnaccountedSeconds: totals.totalUnaccountedSeconds,
+        totalOfflineSeconds: totals.totalOfflineSeconds,
         outsideVisitCount: totals.outsideVisitCount,
         breakCount: totals.breakCount,
       },

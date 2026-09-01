@@ -2,10 +2,9 @@
  * Cross-platform tracker — native background-geolocation on Android/iOS,
  * web setInterval on regular browsers.
  *
- * The web tracker's behavior mirrors useBackgroundTracker (see
- * src/hooks/useBackgroundTracker.ts); the native version delegates to
- * @capacitor-community/background-geolocation, which keeps a foreground
- * service alive so pings keep arriving even when the app is closed.
+ * The native path hands off to LocationTrackingService (native foreground
+ * service), falling back to @capacitor-community/background-geolocation on
+ * builds without it.
  *
  * Both paths POST to the same /api/pings endpoint with the same payload,
  * so the server-side processPings() doesn't need to know which one fired.
@@ -37,11 +36,11 @@ const APP_VERSION = '1.0.0';
  * configured value down on /api/attendance/today; this is the fallback used
  * before that arrives (or if the request fails), so the two must stay in step.
  *
- * NOTE: this governs the WEB tracker only. The native Android watcher is
- * distance-triggered (distanceFilter below), not time-triggered — the plugin
- * exposes no interval knob — so PING_INTERVAL_MS does not apply there.
+ * Applies to EVERY path now: the web timer, the native foreground service, and
+ * the plugin fallback (which has no interval option, so it is throttled to this
+ * rate in its callback).
  */
-const DEFAULT_PING_INTERVAL_MS = 180_000;
+const DEFAULT_PING_INTERVAL_MS = 300_000;
 
 // Guard rails against a misconfigured env var: sub-second polling would hammer
 // the battery and the API, and an absurdly long one would silently disable
@@ -57,6 +56,8 @@ function resolveIntervalMs(requested: number | undefined): number {
 }
 
 let nativeWatcherId: string | null = null;
+/** Last ping posted by the plugin path, for the time-based throttle below. */
+let lastNativePingAt = 0;
 let webInterval: ReturnType<typeof setInterval> | null = null;
 let webFirstTick: ReturnType<typeof setTimeout> | null = null;
 // Called when the server reports it auto-checked-out the employee from a ping.
@@ -78,9 +79,9 @@ export async function startTracker(opts: {
   const intervalMs = resolveIntervalMs(opts.intervalMs);
 
   if (isNative()) {
-    // intervalMs is deliberately not forwarded — the native watcher fires on
-    // movement (distanceFilter), so there is no interval to set.
-    return startNative({ deviceId, onError: opts.onError });
+    // The cadence applies on Android too — both the native service and the
+    // throttled plugin fallback honour it.
+    return startNative({ deviceId, intervalMs, onError: opts.onError });
   }
   return startWeb({ deviceId, intervalMs });
 }
@@ -96,6 +97,8 @@ export async function stopTracker() {
       }
       nativeWatcherId = null;
     }
+    await stopNativeService();
+    lastNativePingAt = 0;
     onAutoCheckoutCb = null;
     return;
   }
@@ -112,11 +115,59 @@ export async function stopTracker() {
 
 // ─── Native (Android/iOS) ───────────────────────────────────────────────
 
+/**
+ * Native foreground-service tracker (Android).
+ *
+ * Capture AND upload run in LocationTrackingService, so tracking continues with
+ * the app swiped away. The plugin path below is kept as a fallback for builds
+ * without the service (older APKs, iOS), but it cannot survive the Activity
+ * being destroyed: the plugin delivers each fix to JS over the Capacitor bridge
+ * and its own service calls stopSelf() when the app goes away.
+ */
+async function startNativeService(opts: {
+  deviceId: string;
+  intervalMs: number;
+}): Promise<boolean> {
+  try {
+    const { registerPlugin } = await import('@capacitor/core');
+    const LocationTracking = registerPlugin<{
+      start(o: { intervalMs: number; deviceId: string }): Promise<{ started: boolean }>;
+      stop(): Promise<void>;
+      status(): Promise<{ running: boolean; queued: number }>;
+    }>('LocationTracking');
+    const res = await LocationTracking.start({
+      intervalMs: opts.intervalMs,
+      deviceId: opts.deviceId,
+    });
+    return !!res?.started;
+  } catch {
+    // Plugin absent (older APK) or permission refused — fall back below.
+    return false;
+  }
+}
+
+async function stopNativeService(): Promise<void> {
+  try {
+    const { registerPlugin } = await import('@capacitor/core');
+    const LocationTracking = registerPlugin<{ stop(): Promise<void> }>('LocationTracking');
+    await LocationTracking.stop();
+  } catch {
+    // Nothing to stop.
+  }
+}
+
 async function startNative(opts: {
   deviceId: string;
+  intervalMs: number;
   onError?: (e: Error) => void;
 }) {
   if (nativeWatcherId) return;
+
+  // Preferred path: hand tracking to the native service and let JS go away.
+  if (await startNativeService({ deviceId: opts.deviceId, intervalMs: opts.intervalMs })) {
+    return;
+  }
+
   try {
     const { BackgroundGeolocation } = await loadBackgroundGeolocation();
     // The plugin uses a Watcher API; we get a callback per location and
@@ -129,7 +180,12 @@ async function startNative(opts: {
         backgroundTitle: 'Swaya Attendance',
         requestPermissions: true,
         stale: false,
-        distanceFilter: 10,
+        // 0, not 10 metres. Distance-filtered updates meant the cadence tracked
+        // how much someone WALKED rather than how long they worked: a median
+        // gap of 8 seconds while moving (~400 pings/hour) and nothing at all
+        // while standing still, which read as offline. Updates now arrive
+        // regardless of movement and the throttle below sets the real rate.
+        distanceFilter: 0,
       },
       async (location: { latitude: number; longitude: number; accuracy: number; simulated: boolean; time: number }, error: { code: string; message?: string } | undefined) => {
         if (error) {
@@ -145,6 +201,13 @@ async function startNative(opts: {
           }
           return;
         }
+        // Time-based throttle. The plugin has no interval option, so the cadence
+        // is enforced here — one ping per PING_INTERVAL_MS, whatever the OS
+        // delivers. Without this, distanceFilter: 0 would post on every fix.
+        const now = Date.now();
+        if (now - lastNativePingAt < opts.intervalMs) return;
+        lastNativePingAt = now;
+
         await postPing({
           lat: location.latitude,
           lng: location.longitude,

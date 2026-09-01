@@ -95,6 +95,7 @@ export default function AdminReportsPage() {
                 <th className="p-3">Check-outs</th>
                 <th className="p-3">Work</th>
                 <th className="p-3">Outside</th>
+                <th className="p-3">Offline</th>
                 <th className="p-3">Flagged</th>
               </tr>
             </thead>
@@ -109,11 +110,12 @@ export default function AdminReportsPage() {
                   <td className="p-3">{r.checkOutCount ?? 0}</td>
                   <td className="p-3">{formatDuration(r.totalWorkSeconds)}</td>
                   <td className="p-3">{formatDuration(r.totalOutsideSeconds)}</td>
+                  <td className="p-3">{formatDuration(r.totalOfflineSeconds || 0)}</td>
                   <td className="p-3">{r.isFlagged ? "Yes" : ""}</td>
                 </tr>
               ))}
               {rows.length === 0 && (
-                <tr><td colSpan={9} className="p-6 text-center text-muted-foreground">No records in range</td></tr>
+                <tr><td colSpan={10} className="p-6 text-center text-muted-foreground">No records in range</td></tr>
               )}
             </tbody>
           </table>

@@ -15,9 +15,7 @@ import {
 import { getNav, activeHref } from "./nav-items";
 
 const ROLE_LABEL: Record<string, string> = {
-  super_admin: "Super Admin",
   admin: "Admin",
-  manager: "Manager",
   employee: "Employee",
 };
 

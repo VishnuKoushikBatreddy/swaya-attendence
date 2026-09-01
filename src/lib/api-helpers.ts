@@ -5,8 +5,11 @@ import { NextResponse, type NextRequest } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "./auth";
 import { connectDB } from "./db";
+import { getActiveUser } from "./active-user";
 
-export type Role = "super_admin" | "admin" | "manager" | "employee";
+// Single source of truth — see src/lib/roles.ts.
+export type { Role } from "./roles";
+import type { Role } from "./roles";
 
 export class ApiError extends Error {
   status: number;
@@ -39,6 +42,18 @@ export function fail(message: string, status = 400, extra?: object) {
 export async function requireAuth() {
   const session = await getServerSession(authOptions);
   if (!session?.user) throw new ApiError("Unauthenticated", 401);
+
+  // The JWT is valid for 7 days and carries role + companyId from the moment of
+  // login. Trusting it alone meant deactivating, deleting or demoting a user had
+  // no effect until it expired. Re-read the live account (cached ~30s) so
+  // revocation actually revokes.
+  const live = await getActiveUser(session.user.id);
+  if (!live) throw new ApiError("Account is inactive or no longer exists", 401);
+
+  // Prefer the CURRENT values over the token's, so a demotion takes effect on
+  // the next request rather than at the next login.
+  session.user.role = live.role;
+  session.user.companyId = live.companyId;
   return session;
 }
 

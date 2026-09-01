@@ -14,7 +14,7 @@ export const GET = withApi(async (_req: NextRequest) => {
 });
 
 export const POST = withApi(async (req: NextRequest) => {
-  const session = await requireRole(["admin", "super_admin"]);
+  const session = await requireRole(["admin"]);
   const body = ShiftSchema.parse(await req.json());
   const shift = await ShiftTemplate.create({
     companyId: new Types.ObjectId(session.user.companyId),

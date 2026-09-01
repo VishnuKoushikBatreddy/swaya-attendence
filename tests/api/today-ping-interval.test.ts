@@ -49,7 +49,6 @@ vi.mock("@/models", () => {
     WorkSite: { findById: () => chain(() => null) },
     EmployeeSchedule: { findById: () => chain(() => null), findOne: () => chain(() => null) },
     ShiftTemplate: { findById: () => chain(() => null) },
-    LeaveRequest: { findOne: () => chain(() => null) },
   };
 });
 
@@ -86,7 +85,7 @@ describe("GET /api/attendance/today — ping interval", () => {
   it("still returns the existing payload fields alongside it", async () => {
     const json: any = await (await today(req())).json();
     // Adding the field must not disturb what the page already consumes.
-    for (const key of ["day", "sessions", "site", "schedule", "shift", "leave"]) {
+    for (const key of ["day", "sessions", "site", "schedule", "shift"]) {
       expect(json.data).toHaveProperty(key);
     }
   });

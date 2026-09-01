@@ -34,17 +34,50 @@ export function summarizeSessionPings(
   totalInside: number;
   totalOutside: number;
   outsideVisitCount: number;
-  unaccounted: number;
+  offline: number;
 } {
-  let totalInside = 0;
-  let totalOutside = 0;
+  // Accumulated in MILLISECONDS and floored once at the end. Flooring each
+  // interval instead loses up to a second per ping, and since work is floored
+  // only once per session, a day with 60 pings drifted ~60s out of balance —
+  // invisible in tests built on whole-minute timestamps, obvious on real data.
+  let insideMs = 0;
+  let outsideMs = 0;
+  let offlineMs = 0;
   let outsideVisitCount = 0;
-  let unaccounted = 0;
   let inOutsideRun = false;
 
   const cap = endTimeMs;
   const floor = opts?.startTimeMs ?? Number.NEGATIVE_INFINITY;
   const maxInterval = opts?.maxIntervalMs ?? Number.POSITIVE_INFINITY;
+
+  // The stretch between check-in and the FIRST ping. The loop below only walks
+  // forward from each ping, so without this the head of the session is dropped
+  // entirely — not credited AND not reported — and work no longer equals
+  // inside + outside + offline. With no pings at all the whole session is the
+  // head, which is why a session that never reported anything used to come back
+  // all-zero instead of fully offline.
+  //
+  // A ping is trusted BACKWARD by the same window it is trusted forward: one at
+  // 09:02 is fair evidence of where someone was at 09:00. Without that symmetry
+  // every ordinary day would carry a sliver of offline time from the gap between
+  // checking in and the first fix landing.
+  if (Number.isFinite(floor)) {
+    const firstMs = pings.length
+      ? Math.min(new Date(pings[0].capturedAt).getTime(), cap)
+      : cap;
+    const headMs = Math.max(0, firstMs - floor);
+    const backCredited = pings.length ? Math.min(headMs, maxInterval) : 0;
+    offlineMs += headMs - backCredited;
+    if (backCredited > 0) {
+      if (pings[0].isInsideGeofence) {
+        insideMs += backCredited;
+      } else {
+        outsideMs += backCredited;
+        outsideVisitCount++;
+        inOutsideRun = true;
+      }
+    }
+  }
 
   for (let i = 0; i < pings.length; i++) {
     const p = pings[i];
@@ -65,23 +98,37 @@ export function summarizeSessionPings(
     // single check-in ping could credit an entire 9-hour shift as "inside" —
     // and with distance-triggered native pings, a stationary employee routinely
     // produces gaps of hours. Only the trusted window counts; the rest is
-    // reported as unaccounted so the numbers stay honest instead of invented.
+    // reported as offline so the numbers stay honest instead of invented.
     const credited = Math.min(spanMs, maxInterval);
-    const dt = Math.floor(credited / 1000);
-    unaccounted += Math.floor((spanMs - credited) / 1000);
+    offlineMs += spanMs - credited;
 
     if (inside) {
-      totalInside += dt;
+      insideMs += credited;
       if (inOutsideRun) inOutsideRun = false;
     } else {
-      totalOutside += dt;
-      if (dt > 0 && !inOutsideRun) {
+      outsideMs += credited;
+      if (credited > 0 && !inOutsideRun) {
         outsideVisitCount++;
         inOutsideRun = true;
       }
     }
   }
-  return { totalInside, totalOutside, outsideVisitCount, unaccounted };
+
+  const totalInside = Math.floor(insideMs / 1000);
+  const totalOutside = Math.floor(outsideMs / 1000);
+  // Offline is the part of the session nothing vouches for, so derive it as the
+  // remainder rather than a fourth independent sum. That makes
+  // work = inside + outside + offline hold EXACTLY instead of approximately —
+  // three separately-floored totals cannot be relied on to add up.
+  const spanSeconds = Number.isFinite(floor)
+    ? Math.max(0, Math.floor((cap - floor) / 1000))
+    : null;
+  const offline =
+    spanSeconds != null
+      ? Math.max(0, spanSeconds - totalInside - totalOutside)
+      : Math.floor(offlineMs / 1000);
+
+  return { totalInside, totalOutside, outsideVisitCount, offline };
 }
 
 // ---------------------------------------------------------------------------
@@ -106,7 +153,7 @@ export function computeDayTotals(
   totalInsideSeconds: number;
   totalOutsideSeconds: number;
   totalBreakSeconds: number;
-  totalUnaccountedSeconds: number;
+  totalOfflineSeconds: number;
   outsideVisitCount: number;
   breakCount: number;
 } {
@@ -114,7 +161,7 @@ export function computeDayTotals(
   let totalInsideSeconds = 0;
   let totalOutsideSeconds = 0;
   let totalBreakSeconds = 0;
-  let totalUnaccountedSeconds = 0;
+  let totalOfflineSeconds = 0;
   let outsideVisitCount = 0;
   let breakCount = 0;
   let prevCheckOutMs: number | null = null;
@@ -130,7 +177,7 @@ export function computeDayTotals(
     });
     totalInsideSeconds += summ.totalInside;
     totalOutsideSeconds += summ.totalOutside;
-    totalUnaccountedSeconds += summ.unaccounted;
+    totalOfflineSeconds += summ.offline;
     outsideVisitCount += summ.outsideVisitCount;
 
     // Time between a check-out and the next check-in is a BREAK, reported on its
@@ -146,14 +193,14 @@ export function computeDayTotals(
     prevCheckOutMs = endMs;
   }
 
-  // Within a session: work = inside + outside + unaccounted. Breaks sit outside
+  // Within a session: work = inside + outside + offline. Breaks sit outside
   // work entirely, so the day reconciles as work + break = elapsed on site.
   return {
     totalWorkSeconds,
     totalInsideSeconds,
     totalOutsideSeconds,
     totalBreakSeconds,
-    totalUnaccountedSeconds,
+    totalOfflineSeconds,
     outsideVisitCount,
     breakCount,
   };
@@ -441,6 +488,74 @@ export function evaluateEventFreshness(
 }
 
 // ---------------------------------------------------------------------------
+// Tracking window: when may the device send location at all?
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether location tracking should be running right now.
+ *
+ * Tracking used to run for as long as a session was open, which is not the same
+ * as "during the shift": a session that outlives its shift (nothing has closed
+ * it yet) kept the GPS awake for hours afterwards, costing battery and
+ * recording positions nobody asked for. Location is only collected inside the
+ * scheduled window now.
+ *
+ * The same grace period as check-in applies at the start, so someone who checks
+ * in a few minutes early is tracked from that moment rather than sitting
+ * untracked until the hour turns.
+ *
+ * With NO schedule there is no window to enforce, and check-in itself is
+ * ungated in that case — so tracking follows the session, exactly as before.
+ * Restricting it would mean unscheduled work produced no location data at all.
+ */
+export function isWithinTrackingWindow(opts: {
+  scheduleStartMs: number | null;
+  scheduleEndMs: number | null;
+  graceMinutes: number;
+  nowMs: number;
+}): boolean {
+  if (opts.scheduleStartMs == null || opts.scheduleEndMs == null) return true;
+  const start = opts.scheduleStartMs - opts.graceMinutes * 60_000;
+  return opts.nowMs >= start && opts.nowMs <= opts.scheduleEndMs;
+}
+
+// ---------------------------------------------------------------------------
+// Live connectivity: is the phone still reporting?
+// ---------------------------------------------------------------------------
+
+export type Connectivity = "live" | "stale" | "offline";
+
+/**
+ * How current an employee's position is.
+ *
+ * A checked-in session tells you a session is OPEN, not that the phone is still
+ * talking to us. Showing "checked in" identically whether the last ping arrived
+ * 30 seconds or 4 hours ago is misleading — a dead phone looked exactly like
+ * someone actively working. This separates the two.
+ *
+ *   live    — reported within a couple of ping intervals; the position is current
+ *   stale   — overdue, but not yet long enough to call it offline
+ *   offline — silent past the threshold, or never reported at all
+ *
+ * Thresholds derive from the configured ping interval so this stays correct if
+ * the cadence changes, rather than hard-coding minutes.
+ */
+export function deriveConnectivity(
+  lastSeenAtMs: number | null,
+  nowMs: number,
+  pingIntervalMs: number,
+  offlineAfterMs: number
+): Connectivity {
+  if (lastSeenAtMs == null || !Number.isFinite(lastSeenAtMs)) return "offline";
+  const age = nowMs - lastSeenAtMs;
+  // A clock slightly ahead should read as current, not as a negative age bug.
+  if (age <= 0) return "live";
+  if (age >= offlineAfterMs) return "offline";
+  // Two intervals tolerates one dropped ping without crying wolf.
+  return age <= pingIntervalMs * 2 ? "live" : "stale";
+}
+
+// ---------------------------------------------------------------------------
 // Auto check-in eligibility (client-side gate before spending a GPS fix).
 // ---------------------------------------------------------------------------
 
@@ -528,7 +643,7 @@ export function evaluateAutoCheckIn(opts: {
  *
  * Precedence: a genuinely short day is half_day even if it also started late;
  * the lateness is not lost, it stays on the day as lateByMinutes.
- * on_leave/absent are set elsewhere and are never overwritten here.
+ * absent is set elsewhere and is never overwritten here.
  */
 export function resolveDayStatus(opts: {
   currentStatus: string | null | undefined;
@@ -537,10 +652,8 @@ export function resolveDayStatus(opts: {
   halfDayThresholdSeconds?: number;
 }): string {
   const threshold = opts.halfDayThresholdSeconds ?? 4 * 3600;
-  // Statuses decided by other rules win outright.
-  if (opts.currentStatus === "on_leave" || opts.currentStatus === "absent") {
-    return opts.currentStatus;
-  }
+  // Absence is decided elsewhere and must not be overwritten here.
+  if (opts.currentStatus === "absent") return "absent";
   if (opts.totalWorkSeconds < threshold) return "half_day";
   return opts.lateByMinutes > 0 ? "late" : "present";
 }
@@ -566,4 +679,98 @@ export function classifyOutsideForDay(opts: {
     flagExcessiveOutside: opts.totalOutsideSeconds > threshold,
     outsideCounts: true,
   };
+}
+
+/**
+ * Whether a day rests on too little evidence to be trusted.
+ *
+ * Offline time is in-session time no ping vouches for: the phone was off, out of
+ * signal, denied location, or the app was killed by the OS. It is NOT proof of
+ * absence — the employee may well have been at their desk the whole time — so it
+ * does not reduce totalWorkSeconds, which stays the elapsed session.
+ *
+ * But without a flag, a phone that dies at noon produces a full 9-hour day that
+ * is indistinguishable in reports from one tracked end to end. That is the same
+ * inverted incentive classifyOutsideForDay exists to close: the least evidence
+ * gave the cleanest record.
+ *
+ * Two conditions, both required:
+ *  - a SHARE of the session (default 25%), so the threshold scales with a 2-hour
+ *    shift and a 10-hour one instead of flagging every short day; and
+ *  - an absolute FLOOR (default 15 minutes, one OFFLINE_AFTER_MS), so a single
+ *    tunnel or lift ride on a brief shift is not treated as a missing day.
+ */
+export function classifyOfflineForDay(opts: {
+  totalOfflineSeconds: number;
+  totalWorkSeconds: number;
+  flagRatio?: number;
+  flagFloorSeconds?: number;
+}): { flagExcessiveOffline: boolean; offlineRatio: number } {
+  const ratio = opts.flagRatio ?? 0.25;
+  const floor = opts.flagFloorSeconds ?? 15 * 60;
+  const offlineRatio =
+    opts.totalWorkSeconds > 0 ? opts.totalOfflineSeconds / opts.totalWorkSeconds : 0;
+  return {
+    flagExcessiveOffline:
+      opts.totalOfflineSeconds > floor && offlineRatio > ratio,
+    offlineRatio,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Day flags vs audit markers.
+//
+// `flagReasons` holds two different kinds of string, and conflating them broke
+// isFlagged in both directions:
+//
+//  - REAL FLAGS mean something is wrong and a human should look.
+//  - MARKERS are audit breadcrumbs: how a check-in or check-out happened. An
+//    automatic check-out at the end of a shift is completely normal.
+//
+// isFlagged used to be cleared only when flagReasons was EMPTY, so a single
+// benign marker pinned a day as flagged forever, long after the real reason had
+// been removed. Deriving it from the real flags alone fixes that, and makes the
+// value impossible to contradict: it is always a function of the reasons list.
+// ---------------------------------------------------------------------------
+
+/** Reasons that genuinely warrant attention. */
+export const REAL_FLAG_REASONS = new Set([
+  "excessive_outside_time",
+  "excessive_offline_time",
+  "mock_location_at_check_in",
+  "mock_location_detected",
+  "client_flagged_mock",
+  "impossible_speed",
+  "large_teleport",
+  "low_accuracy",
+]);
+
+/** Breadcrumbs describing HOW something happened. Never a reason to flag. */
+export const AUDIT_MARKER_REASONS = new Set([
+  "geofence_check_in",
+  "auto_checkout_geofence_exit",
+  "auto_checkout_left_site",
+  "auto_checkout_ping_gap",
+  "auto_checkout_shift_ended",
+]);
+
+/**
+ * Whether a reason string is a real flag.
+ *
+ * Unknown strings count as flags deliberately: a reason nobody classified is
+ * more safely surfaced to an admin than silently ignored. The paired test
+ * asserts every reason the codebase actually emits is in one of the two sets,
+ * so this fallback only ever applies to something genuinely new.
+ */
+export function isRealFlagReason(reason: string): boolean {
+  return !AUDIT_MARKER_REASONS.has(reason);
+}
+
+/** isFlagged, derived from the reasons list so the two can never disagree. */
+export function deriveIsFlagged(reasons: Iterable<string> | null | undefined): boolean {
+  if (!reasons) return false;
+  for (const r of reasons) {
+    if (isRealFlagReason(r)) return true;
+  }
+  return false;
 }

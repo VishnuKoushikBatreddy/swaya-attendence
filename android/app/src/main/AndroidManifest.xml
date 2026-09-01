@@ -45,6 +45,16 @@
             </intent-filter>
         </receiver>
 
+        <!-- Captures and uploads location for the whole shift without the
+             WebView. foregroundServiceType=location is required from API 29;
+             the FOREGROUND_SERVICE_LOCATION permission is declared below. -->
+        <service
+            android:name=".LocationTrackingService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="location"
+            android:stopWithTask="false" />
+
         <!-- Receives OS geofence ENTER/EXIT transitions even when the app is
              killed. Triggered via our own PendingIntent, so it is not exported. -->
         <receiver

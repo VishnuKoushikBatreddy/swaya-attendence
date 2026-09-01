@@ -34,8 +34,6 @@ const AttendanceDaySchema = new Schema(
         "late",
         "half_day",
         "absent",
-        "on_leave",
-        "holiday",
         "flagged",
       ],
       default: "pending",
@@ -53,7 +51,7 @@ const AttendanceDaySchema = new Schema(
     breakCount: { type: Number, default: 0 },
     // In-session time with no ping close enough to vouch for it. Reported rather
     // than silently attributed to inside/outside.
-    totalUnaccountedSeconds: { type: Number, default: 0 },
+    totalOfflineSeconds: { type: Number, default: 0 },
     lateByMinutes: { type: Number, default: 0 },
     earlyLeaveMinutes: { type: Number, default: 0 },
     isFlagged: { type: Boolean, default: false, index: true },

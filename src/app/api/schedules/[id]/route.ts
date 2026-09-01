@@ -7,7 +7,7 @@ import { EmployeeSchedule } from "@/models";
 import { requireRole, ok, fail, withApi } from "@/lib/api-helpers";
 
 export const DELETE = withApi(async (_req: NextRequest, ctx: { params: { id: string } }) => {
-  const session = await requireRole(["admin", "super_admin", "manager"]);
+  const session = await requireRole(["admin"]);
   if (!Types.ObjectId.isValid(ctx.params.id)) return fail("Invalid id", 400);
   const schedule = await EmployeeSchedule.findOneAndDelete({
     _id: ctx.params.id,

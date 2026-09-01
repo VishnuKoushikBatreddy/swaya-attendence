@@ -15,7 +15,7 @@ describe("summarizePings — cumulative inside/outside accounting", () => {
       totalInside: 0,
       totalOutside: 0,
       outsideVisitCount: 0,
-      unaccounted: 0,
+      offline: 0,
     });
   });
 

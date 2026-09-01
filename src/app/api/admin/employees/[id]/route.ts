@@ -10,11 +10,10 @@ import {
   LocationPing,
   GeofenceEvent,
   OutsideSiteLog,
-  RegularizationRequest,
-  LeaveRequest,
   EmployeeDevice,
 } from "@/models";
 import { requireRole, ok, withApi, fail } from "@/lib/api-helpers";
+import { invalidateActiveUser } from "@/lib/active-user";
 import { z } from "zod";
 
 const PatchSchema = z.object({
@@ -23,35 +22,35 @@ const PatchSchema = z.object({
   employeeCode: z.string().optional(),
   department: z.string().optional(),
   designation: z.string().optional(),
-  managerId: z.string().nullable().optional(),
   isActive: z.boolean().optional(),
   role: z.enum(["admin", "employee"]).optional(),
 });
 
 export const PATCH = withApi(async (req: NextRequest, ctx: { params: { id: string } }) => {
-  const session = await requireRole(["admin", "super_admin"]);
+  const session = await requireRole(["admin"]);
   if (!Types.ObjectId.isValid(ctx.params.id)) return fail("Invalid id", 400);
   const body = PatchSchema.parse(await req.json());
   const update: any = { ...body };
-  if (body.managerId) update.managerId = new Types.ObjectId(body.managerId);
-  if (body.managerId === null) update.managerId = null;
   const user = await User.findOneAndUpdate(
     { _id: ctx.params.id, companyId: session.user.companyId },
     { $set: update },
     { new: true }
   ).lean();
   if (!user) return fail("Not found", 404);
+  // requireAuth caches the live account for ~30s; drop it so a deactivation or
+  // role change takes effect on the very next request rather than after the TTL.
+  invalidateActiveUser(ctx.params.id);
   return ok({ id: String(user._id), fullName: user.fullName, role: user.role, isActive: user.isActive });
 });
 
 /**
  * Hard delete: permanently remove the employee AND all of their data from the
  * database (assignments, schedules, attendance, pings, geofence events,
- * outside-site logs, regularization/leave requests, devices). Irreversible.
+ * outside-site logs, devices). Irreversible.
  * The AuditLog (who-did-what trail) is intentionally preserved.
  */
 export const DELETE = withApi(async (_req: NextRequest, ctx: { params: { id: string } }) => {
-  const session = await requireRole(["admin", "super_admin"]);
+  const session = await requireRole(["admin"]);
   if (!Types.ObjectId.isValid(ctx.params.id)) return fail("Invalid id", 400);
 
   // Guard: an admin cannot delete their own account.
@@ -77,11 +76,12 @@ export const DELETE = withApi(async (_req: NextRequest, ctx: { params: { id: str
     LocationPing.deleteMany({ employeeId }),
     GeofenceEvent.deleteMany({ employeeId }),
     OutsideSiteLog.deleteMany({ employeeId }),
-    RegularizationRequest.deleteMany({ employeeId }),
-    LeaveRequest.deleteMany({ employeeId }),
     EmployeeDevice.deleteMany({ employeeId }),
   ]);
   await User.deleteOne({ _id: employeeId });
+  // Their session cookie stays cryptographically valid until it expires; this is
+  // what makes requireAuth reject it immediately instead.
+  invalidateActiveUser(ctx.params.id);
 
   return ok({ id: ctx.params.id, deleted: true });
 });

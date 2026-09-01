@@ -66,6 +66,10 @@ export default function HistoryPage() {
                 <span className="text-muted-foreground">Outside</span>
                 <p className="font-medium">{formatDuration(d.totalOutsideSeconds)}</p>
               </div>
+              <div>
+                <span className="text-muted-foreground">Offline</span>
+                <p className="font-medium">{formatDuration(d.totalOfflineSeconds || 0)}</p>
+              </div>
             </CardContent>
           </Card>
         ))

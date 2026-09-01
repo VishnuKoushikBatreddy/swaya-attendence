@@ -7,11 +7,10 @@ import { cn } from "@/lib/utils";
 import { LogOut, MapPin } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { getNav, activeHref } from "./nav-items";
+import { useUnreadNotifications } from "./useUnreadNotifications";
 
 const ROLE_LABEL: Record<string, string> = {
-  super_admin: "Super admin",
   admin: "Admin",
-  manager: "Manager",
   employee: "Employee",
 };
 
@@ -20,6 +19,7 @@ export function Sidebar({ role }: { role: string }) {
   const { data: session } = useSession();
 
   const nav = getNav(role);
+  const unread = useUnreadNotifications(role);
   const active = activeHref(nav, pathname);
   const name = session?.user?.name || "";
   const initials =

@@ -1,6 +1,6 @@
 /**
  * Admin dashboard: overview cards, sites, employees (with seed data),
- * shifts, schedules, holidays, audit, reports.
+ * shifts, schedules, audit, reports.
  */
 describe("Admin dashboard", () => {
   before(() => {
@@ -39,11 +39,6 @@ describe("Admin dashboard", () => {
   it("shows schedules page", () => {
     cy.visit("/admin/schedules");
     cy.contains(/Schedules/i, { timeout: 10000 });
-  });
-
-  it("shows holidays page", () => {
-    cy.visit("/admin/holidays");
-    cy.contains(/Holidays|Republic Day/i, { timeout: 10000 });
   });
 
   it("shows audit page", () => {

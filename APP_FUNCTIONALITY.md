@@ -36,20 +36,19 @@ in the background while on shift, and produces attendance records and reports.
 
 ## 2. Roles & access control
 
-Four roles, in a hierarchy. Each can reach its own area plus everything below it.
+Two roles. An admin can also reach the employee area, so they can see exactly
+what staff see.
 
-| Role | Hierarchy | Can access | Main features |
-|------|-----------|-----------|---------------|
-| **super_admin** | 100 | super-admin + all below | Manage companies, view all users |
-| **admin** | 80 | admin, manager, employee | Sites, employees, shifts, schedules, holidays, reports, audit |
-| **manager** | 40 | manager, employee | Approvals (regularization/leave), team reports |
-| **employee** | 10 | employee only | Check in/out, history, regularization, my sites |
+| Role | Can access | Main features |
+|------|-----------|---------------|
+| **admin** | Admin + employee areas | Sites, employees, shifts, schedules, live status, reports, audit |
+| **employee** | Employee area only | Check in/out, history, my sites |
 
 - **Enforced in two places:** `src/middleware.ts` (route guards by URL prefix) and
   every API route via `requireRole([...])` in `src/lib/api-helpers.ts`.
 - Unauthorized access redirects the user back to their own role's home.
 - Multi-tenant: every record carries a `companyId`; users only ever see their own
-  company's data (super_admin works across companies).
+  company's data.
 
 _Files: `src/middleware.ts`, `src/lib/api-helpers.ts`, `src/app/page.tsx`_
 
@@ -82,7 +81,7 @@ So every company starts with one admin who then creates the rest of the team.
 
 ### Routing by role
 - Root `/` and login redirect each user to their dashboard
-  (super_admin → `/super-admin`, admin → `/admin`, etc.).
+  (admin → `/admin`, employee → `/employee`).
 
 _Files: `src/app/api/auth/*`, `src/lib/auth.ts`, `src/lib/email.ts`, `src/middleware.ts`_
 
@@ -94,12 +93,11 @@ Key entities and how they relate:
 
 ```
 Company
- ├── User (super_admin/admin/manager/employee)         ← managerId links employee→manager
+ ├── User (admin | employee)
  ├── WorkSite (GPS point + radius)
  ├── ShiftTemplate (start/end/grace/min-work/night)
  ├── EmployeeSiteAssignment (User ↔ WorkSite, PERMANENT)   ← used by check-in
  ├── EmployeeSchedule (User + date → site + shift, PER-DAY) ← used for late/grace only
- ├── Holiday (company date)
  │
  ├── AttendanceDay (one per employee per work-date)      ← the daily summary record
  │    └── AttendanceSession (one per check-in/out cycle)
@@ -107,8 +105,6 @@ Company
  │         ├── GeofenceEvent (entered_site / exited_site)
  │         └── OutsideSiteLog (a span spent outside the radius)
  │
- ├── RegularizationRequest (employee asks to correct a day)
- ├── LeaveRequest (employee requests leave)
  ├── EmployeeDevice (registered device ids)
  └── AuditLog (who-did-what — see §18, currently not written to)
 ```
@@ -140,7 +136,7 @@ Full admin CRUD:
   account cannot log in, but the record and history are kept.
 - **Delete (hard, cascade):** the trash icon **permanently deletes** the employee
   AND all their data — assignments, schedules, attendance days/sessions, pings,
-  geofence events, outside-site logs, regularization & leave requests, devices.
+  geofence events, outside-site logs, devices.
   Guards: can't delete yourself; scoped to your company. The `AuditLog` trail is
   preserved.
 
@@ -169,16 +165,6 @@ Assigns each employee a **site + shift for a specific date**.
   calculation, not to constrain check-in** (see §11 and §19).
 
 _Files: `src/app/(dashboard)/admin/schedules/page.tsx`, `src/app/api/schedules/*`_
-
----
-
-## 9. Holidays (`/admin/holidays`)
-
-Company-wide holidays (name + date). Full CRUD (create, edit dialog, delete).
-Unique per company per date. _Note:_ holidays are stored but **not yet applied** to
-attendance marking (no auto "holiday" status on those dates — see §19).
-
-_Files: `src/app/(dashboard)/admin/holidays/page.tsx`, `src/app/api/holidays/*`_
 
 ---
 
@@ -286,47 +272,18 @@ present  →  half_day                (at check-out if < 4h worked)
          →  isFlagged + flagReasons (mock location, >30 min outside, auto-checkout)
 ```
 
-Other possible statuses (`absent`, `on_leave`) exist in the model but are **not
+The `absent` status exists in the model but is **not
 auto-populated** by current logic (see §19).
 
 _Files: `src/models/AttendanceDay.ts`, `src/lib/attendance-service.ts`_
 
 ---
 
-## 15. Regularization requests
-
-For fixing a day that was recorded wrong.
-- **Employee** submits (`/employee/regularization`): type
-  (`forgot_check_in`, `forgot_check_out`, `gps_issue`, `outside_site_reason`,
-  `manual_correction`), a reason, optional corrected check-in/out times.
-- **Manager/admin** approves or rejects (`/manager/approvals`).
-- **On approval, attendance data is actually modified:** the requested check-in/out
-  times overwrite the `AttendanceDay`'s `firstCheckInAt` / `lastCheckOutAt`, and the
-  day is stamped `approvedBy`/`approvedAt`. The employee is emailed the decision.
-
-This is a real correction mechanism (unlike leave — see below).
-
-_Files: `src/app/(dashboard)/employee/regularization/page.tsx`, `src/app/api/regularization/*`_
-
----
-
-## 16. Leave requests
-
-- Types: casual, sick, paid, unpaid, other; with start/end dates and reason.
-- Manager/admin approve or reject; employees can cancel their own.
-- **On approval, nothing happens to attendance.** It's purely request tracking —
-  approved leave does **not** mark the covered days as `on_leave`. There's also
-  **no employee-facing leave UI page** (API only). (See §19.)
-
-_Files: `src/app/api/leave/*`, `src/app/(dashboard)/manager/approvals/page.tsx`_
-
----
-
 ## 17. Reports
 
-### Attendance report (`/admin/reports`, `/manager/reports`)
+### Attendance report (`/admin/reports`)
 - Filter by date range, site, employee. Scoped by role (employee = self,
-  manager = team, admin = company).
+  admin = company).
 - Rows are `AttendanceDay` records enriched with employee name/code/email.
 - **CSV export** columns: Date, Employee Code, Name, Email, Status, Check-in,
   Check-out, Work(sec), Inside(sec), Outside(sec), Late(min), Flagged, Flag Reasons.
@@ -334,7 +291,7 @@ _Files: `src/app/api/leave/*`, `src/app/(dashboard)/manager/approvals/page.tsx`_
 
 ### Today summary (dashboards)
 Counts for today across the role's scope: total, present, late, absent, half_day,
-flagged, on_leave (computed in the company timezone).
+flagged (computed in the company timezone).
 
 _Files: `src/app/api/reports/attendance/route.ts`, `src/app/api/reports/attendance/today/route.ts`_
 
@@ -359,24 +316,19 @@ use this as the starting point for your suggestions.
 1. **Daily site assignment isn't enforced at check-in.** The Schedules page sets a
    site per day, but check-in validates against *permanent* assignments. Decide
    whether the daily site should drive/limit check-in.
-2. **Holidays aren't applied.** Holidays are stored but don't auto-mark those dates
-   or skip "absent"/late logic.
 3. **`absent` is never set automatically.** Nothing marks employees absent for days
    with no check-in (would need a scheduled job).
-4. **Leave doesn't affect attendance.** Approved leave doesn't mark days `on_leave`
-   or exclude them from "absent"/reports. And there's no employee leave UI.
 
 **Feature completeness**
 5. **Audit logging is a stub** — wire `AuditLog.create` into create/update/delete
    (and the new hard-delete) so the audit page is meaningful.
 6. **No "reactivate" button** for inactive employees (the API supports it; only the
    toggle does now — actually the toggle does cover this, but verify UX).
-7. **No leave request page** for employees (API exists, UI doesn't).
 8. **Password change / admin-initiated password reset** for employees isn't exposed.
 
 **Consistency / polish**
 9. **Hard vs soft delete is inconsistent** — sites/employees… employees now hard-
-   delete with cascade, while sites/shifts soft-delete (`isActive`) and holidays
+   delete with cascade, while sites/shifts soft-delete (`isActive`) and other records
    hard-delete. Decide on one policy per entity and document it.
 10. **Leave creation doesn't check role** (any authenticated user could create one).
 11. **Auto-checkout buffer is global**, not per-site — a per-site buffer/radius may
@@ -385,7 +337,7 @@ use this as the starting point for your suggestions.
 
 **Operational**
 13. **No background job runner** — auto-absent, end-of-shift session closing, and
-    holiday application all need a scheduler (cron) that doesn't exist yet.
+    all need a scheduler (cron) beyond the existing close-shifts job.
 14. **Audit/IP/user-agent capture** isn't recorded anywhere.
 
 ---

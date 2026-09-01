@@ -1,6 +1,6 @@
 /**
  * Manual seed script: `npm run seed`
- * Creates a demo company, admin, manager, employees, sites, and a shift.
+ * Creates a demo company, admin, employees, sites, and a shift.
  * Useful for local dev. Idempotent: only seeds if no data exists.
  */
 import { readFileSync, existsSync } from "node:fs";
@@ -31,7 +31,6 @@ import { connectDB, disconnectDB } from "../src/lib/db";
 import {
   Company,
   EmployeeSiteAssignment,
-  Holiday,
   ShiftTemplate,
   User,
   WorkSite,
@@ -63,14 +62,6 @@ async function main() {
     isActive: true,
   });
 
-  const manager = await User.create({
-    companyId: company._id,
-    fullName: "Manager User",
-    email: "manager@demo.com",
-    passwordHash: password,
-    role: "manager",
-    isActive: true,
-  });
 
   const employees = await User.insertMany([
     {
@@ -79,7 +70,6 @@ async function main() {
       email: "alice@demo.com",
       passwordHash: password,
       role: "employee",
-      managerId: manager._id,
       employeeCode: "E001",
       department: "Engineering",
       designation: "Engineer",
@@ -91,7 +81,6 @@ async function main() {
       email: "bob@demo.com",
       passwordHash: password,
       role: "employee",
-      managerId: manager._id,
       employeeCode: "E002",
       department: "Engineering",
       designation: "Engineer",
@@ -128,16 +117,10 @@ async function main() {
     isActive: true,
   });
 
-  await Holiday.create({
-    companyId: company._id,
-    name: "Republic Day",
-    holidayDate: "2026-01-26",
-  });
 
   console.log("Seeded:");
   console.log("  Company:", company.name, "id:", company._id);
   console.log("  Admin   → admin@demo.com   / password123");
-  console.log("  Manager → manager@demo.com / password123");
   console.log("  Employee→ alice@demo.com   / password123");
   console.log("  Site:    Main Office (lat=12.971599, lng=77.594566, radius=200m)");
   await disconnectDB();
