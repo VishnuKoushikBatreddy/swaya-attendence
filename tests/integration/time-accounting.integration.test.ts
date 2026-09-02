@@ -12,6 +12,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { Types } from "mongoose";
+import { giveOpenEndedSchedule } from "./schedule-helper";
 
 const RUN = process.env.RUN_DB_TESTS === "1" && !!process.env.MONGODB_URI;
 const center = { lat: 12.915356916409525, lng: 77.64286120026878 };
@@ -55,6 +56,7 @@ describe.skipIf(!RUN)("time accounting (integration)", () => {
       isActive: true,
       isPrimary: true,
     });
+    await giveOpenEndedSchedule(models, { companyId, employeeId: employeeId, siteId });
   }, 120_000);
 
   afterAll(async () => {
@@ -162,6 +164,7 @@ describe.skipIf(!RUN)("time accounting (integration)", () => {
       isActive: true,
       isPrimary: true,
     });
+    await giveOpenEndedSchedule(models, { companyId, employeeId: loneId, siteId });
 
     const start = Date.now() - 5 * 60 * MIN;
     await service.processCheckIn({
@@ -208,6 +211,7 @@ describe.skipIf(!RUN)("time accounting (integration)", () => {
       isActive: true,
       isPrimary: true,
     });
+    await giveOpenEndedSchedule(models, { companyId, employeeId: shortId, siteId });
 
     const base = Date.now() - 8 * 60 * MIN;
     const cycle = async (fromMin: number, toMin: number) => {

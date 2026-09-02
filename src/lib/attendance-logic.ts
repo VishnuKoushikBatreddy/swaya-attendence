@@ -269,17 +269,36 @@ export const GATE_DAY_OFF_REASON =
   "Today is a scheduled day off — no check-in required.";
 export const GATE_OUT_OF_HOURS_REASON =
   "You can only check in or out during your scheduled shift hours.";
+export const GATE_NO_SCHEDULE_REASON =
+  "You have no shift scheduled for today.";
 
 /**
- * Enforce that check-in/out happens within [start − grace, end]. No schedule =>
- * no gate. A scheduled non-working day blocks the action entirely.
+ * Enforce that check-in/out happens within [start − grace, end].
+ *
+ * A scheduled non-working day blocks the action entirely.
+ *
+ * NO SCHEDULE AT ALL is the interesting case. This used to wave it through, so
+ * an employee with nothing rostered for today could still check in — which
+ * defeats the point of rostering: an unscheduled day means "you are not working
+ * today", not "anything goes". Absence of a record was being read as absence of
+ * a rule.
+ *
+ * `requireSchedule` therefore defaults to true. It exists because the opposite
+ * is also legitimate: a company that never uses the schedule feature would
+ * otherwise be unable to check in at all, and their empty schedule collection
+ * genuinely does mean "no restriction".
  */
 export function evaluateScheduleGate(
   schedule: GateSchedule,
   graceMinutes: number,
-  atMs: number
+  atMs: number,
+  opts?: { requireSchedule?: boolean }
 ): { ok: true } | { ok: false; reason: string } {
-  if (!schedule) return { ok: true };
+  if (!schedule) {
+    return (opts?.requireSchedule ?? true)
+      ? { ok: false, reason: GATE_NO_SCHEDULE_REASON }
+      : { ok: true };
+  }
   if (!schedule.isWorkingDay) return { ok: false, reason: GATE_DAY_OFF_REASON };
   if (schedule.expectedStartAtMs != null && schedule.expectedEndAtMs != null) {
     const graceMs = graceMinutes * 60_000;

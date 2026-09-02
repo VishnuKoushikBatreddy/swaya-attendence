@@ -122,6 +122,12 @@ export const env = {
   // scheduled hours and not yet checked in, the app checks them in without a tap.
   // Off switch is server-side and delivered on /api/attendance/today, so it can
   // be disabled without a rebuild or a redeploy of the app shell.
+  // Refuse check-in on a day the employee has no schedule for. An unscheduled
+  // day means "not working today"; treating a missing record as "no rule" let
+  // anyone clock in on any day, which defeats rostering entirely. Set to false
+  // for a company that does not use the schedule feature at all, where an empty
+  // schedule collection genuinely does mean "no restriction".
+  REQUIRE_SCHEDULE_FOR_CHECKIN: bool("REQUIRE_SCHEDULE_FOR_CHECKIN", true),
   AUTO_CHECKIN_ENABLED: bool("AUTO_CHECKIN_ENABLED", true),
   // How often the client may re-evaluate its position for auto check-in. Each
   // attempt costs a GPS fix, so this is deliberately slower than the ping rate.

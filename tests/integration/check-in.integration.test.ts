@@ -11,6 +11,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { Types } from "mongoose";
+import { giveOpenEndedSchedule } from "./schedule-helper";
 
 const RUN = process.env.RUN_DB_TESTS === "1" && !!process.env.MONGODB_URI;
 
@@ -51,6 +52,7 @@ describe.skipIf(!RUN)("processCheckIn (integration)", () => {
       siteId,
       isActive: true,
     });
+    await giveOpenEndedSchedule(models, { companyId, employeeId: employeeId, siteId });
   });
 
   afterAll(async () => {
@@ -109,13 +111,26 @@ describe.skipIf(!RUN)("processCheckIn (integration)", () => {
     // Same coordinates, but the site belongs to a different company and the
     // employee has no assignment to it -> no assignment found.
     const otherEmployee = new Types.ObjectId();
-    await models.WorkSite.create({
+    const otherSite = await models.WorkSite.create({
       companyId: otherCompanyId,
       name: "Other Co Site",
       location: { type: "Point", coordinates: [center.lng, center.lat] },
       radiusMeters: 50,
       isActive: true,
     });
+    // They need a schedule, or the gate refuses first and this test stops
+    // exercising the isolation path it exists to prove. It must NOT point at
+    // otherSite though: a schedule grants access to the site it names, which
+    // would hand them exactly the permission this test says they lack. Point it
+    // at the FIRST company's site — one their company does not own — so
+    // resolveCheckInSite finds nothing there and falls through to assignments,
+    // where they have none.
+    await giveOpenEndedSchedule(models, {
+      companyId: otherCompanyId,
+      employeeId: otherEmployee,
+      siteId,
+    });
+    void otherSite;
     const res = await processCheckIn({
       employeeId: String(otherEmployee),
       companyId: String(otherCompanyId),

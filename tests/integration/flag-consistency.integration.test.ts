@@ -9,6 +9,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { Types } from "mongoose";
+import { giveOpenEndedSchedule } from "./schedule-helper";
 
 const RUN = process.env.RUN_DB_TESTS === "1" && !!process.env.MONGODB_URI;
 const center = { lat: 12.915356916409525, lng: 77.64286120026878 };
@@ -64,6 +65,7 @@ describe.skipIf(!RUN)("flag consistency (integration)", () => {
       isActive: true,
       isPrimary: true,
     });
+    await giveOpenEndedSchedule(models, { companyId, employeeId: employeeId, siteId });
     return employeeId;
   }
 

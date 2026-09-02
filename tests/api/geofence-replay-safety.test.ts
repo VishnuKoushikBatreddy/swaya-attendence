@@ -88,7 +88,13 @@ vi.mock("@/models", () => {
     WorkSite: { findById: vi.fn(() => chain(() => null)), find: vi.fn(() => chain(() => [])) },
     User: { find: vi.fn(() => chain(() => [])), findById: vi.fn(() => chain(() => null)) },
     EmployeeSiteAssignment: { find: vi.fn(() => chain(() => [])) },
-    EmployeeSchedule: { findOne: vi.fn(() => chain(() => null)), findById: vi.fn(() => chain(() => null)) },
+    // A check-in now requires a schedule for the day, so these tests supply an
+    // open-ended working day. Without one the gate refuses before the replay
+    // logic under test is ever reached.
+    EmployeeSchedule: {
+      findOne: vi.fn(() => chain(() => ({ isWorkingDay: true, siteId: null }))),
+      findById: vi.fn(() => chain(() => null)),
+    },
     GeofenceEvent: { create: vi.fn(async () => ({})) },
     ShiftTemplate: { findById: vi.fn(() => chain(() => null)) },
   };

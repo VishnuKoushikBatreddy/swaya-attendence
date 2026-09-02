@@ -15,6 +15,7 @@ import {
   classifyOutsideForDay,
   GATE_DAY_OFF_REASON,
   GATE_OUT_OF_HOURS_REASON,
+  GATE_NO_SCHEDULE_REASON,
   type SummaryPing,
 } from "@/lib/attendance-logic";
 
@@ -190,8 +191,21 @@ describe("isSustainedAway (auto-checkout trigger)", () => {
 describe("evaluateScheduleGate", () => {
   const window = { isWorkingDay: true, expectedStartAtMs: ms(9), expectedEndAtMs: ms(18) };
 
-  it("allows everything when there is no schedule", () => {
-    expect(evaluateScheduleGate(null, 0, ms(3))).toEqual({ ok: true });
+  it("REFUSES when nothing is scheduled for the day", () => {
+    // An unscheduled day means "you are not working today". Waving it through
+    // read the absence of a record as the absence of a rule, so anyone could
+    // clock in on any day and rostering did nothing.
+    const r = evaluateScheduleGate(null, 0, ms(10));
+    expect(r.ok).toBe(false);
+    expect((r as { reason: string }).reason).toBe(GATE_NO_SCHEDULE_REASON);
+  });
+
+  it("allows an unscheduled day when the deployment does not roster", () => {
+    // A company that never uses the schedule feature would otherwise be locked
+    // out entirely — their empty schedule collection really does mean "no rule".
+    expect(
+      evaluateScheduleGate(null, 0, ms(10), { requireSchedule: false })
+    ).toEqual({ ok: true });
   });
 
   it("HOLIDAY / WEEK-OFF: blocks a scheduled non-working day", () => {

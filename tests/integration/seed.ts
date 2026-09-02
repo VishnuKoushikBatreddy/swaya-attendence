@@ -80,14 +80,30 @@ async function seedOne(
     isActive: true,
     isPrimary: true,
   });
-  await EmployeeSchedule.create({
-    companyId,
-    employeeId: employee._id,
-    siteId: site._id,
-    shiftTemplateId: shift._id,
-    workDate: "2026-06-15",
-    isWorkingDay: true,
-  });
+  // Check-in requires a schedule for the day in question, so cover TODAY as well
+  // as the fixed historical date some tests assert against. A lone hardcoded
+  // date silently stopped covering "now" the moment it fell into the past, and
+  // every check-in in these suites then failed the shift gate rather than the
+  // thing under test.
+  //
+  // isWorkingDay with no expectedStartAt/EndAt means "working, no hours window",
+  // so tests stay free to use whatever timestamps they need.
+  const scheduledDates = [
+    "2026-06-15",
+    ...[-1, 0, 1].map((d) =>
+      new Date(Date.now() + d * 86_400_000).toISOString().slice(0, 10)
+    ),
+  ];
+  await EmployeeSchedule.insertMany(
+    Array.from(new Set(scheduledDates)).map((workDate) => ({
+      companyId,
+      employeeId: employee._id,
+      siteId: site._id,
+      shiftTemplateId: shift._id,
+      workDate,
+      isWorkingDay: true,
+    }))
+  );
 
   return {
     companyId,

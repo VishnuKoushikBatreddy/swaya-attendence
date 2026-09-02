@@ -1171,16 +1171,21 @@ async function scheduleGate(
     employeeId: new Types.ObjectId(employeeId),
     workDate,
   }).lean();
-  if (!schedule) return { ok: true };
+
+  // NOTE: a missing schedule is no longer waved through here — that decision
+  // belongs to evaluateScheduleGate, which refuses unless the deployment has
+  // opted out of rostering. Returning early meant an employee with nothing
+  // scheduled for today could check in freely.
 
   // Only the shift's grace is needed, and only for a working day with a window.
+  // `schedule` may legitimately be null now that the early return above is gone.
   let graceMinutes = 0;
-  if (schedule.isWorkingDay && schedule.expectedStartAt && schedule.expectedEndAt) {
+  if (schedule?.isWorkingDay && schedule.expectedStartAt && schedule.expectedEndAt) {
     const shift = await ShiftTemplate.findById(schedule.shiftTemplateId).lean();
     graceMinutes = shift?.graceMinutes ?? 0;
   }
   return evaluateScheduleGate(
-    {
+    schedule && {
       isWorkingDay: schedule.isWorkingDay,
       expectedStartAtMs: schedule.expectedStartAt
         ? new Date(schedule.expectedStartAt).getTime()
@@ -1190,7 +1195,8 @@ async function scheduleGate(
         : null,
     },
     graceMinutes,
-    atMs
+    atMs,
+    { requireSchedule: env.REQUIRE_SCHEDULE_FOR_CHECKIN }
   );
 }
 

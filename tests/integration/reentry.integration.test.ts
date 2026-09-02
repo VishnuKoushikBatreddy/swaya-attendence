@@ -13,6 +13,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { Types } from "mongoose";
+import { giveOpenEndedSchedule } from "./schedule-helper";
 
 const RUN = process.env.RUN_DB_TESTS === "1" && !!process.env.MONGODB_URI;
 const center = { lat: 12.915356916409525, lng: 77.64286120026878 };
@@ -51,6 +52,7 @@ describe.skipIf(!RUN)("leave and re-enter (integration)", () => {
       isActive: true,
       isPrimary: true,
     });
+    await giveOpenEndedSchedule(models, { companyId, employeeId: employeeId, siteId });
   }, 120_000);
 
   afterAll(async () => {
@@ -161,6 +163,7 @@ describe.skipIf(!RUN)("leave and re-enter (integration)", () => {
       isActive: true,
       isPrimary: true,
     });
+    await giveOpenEndedSchedule(models, { companyId, employeeId: empId, siteId });
 
     const base = Date.now() - 90 * MIN;
     const call = (min: number, device: string) =>
@@ -208,6 +211,7 @@ describe.skipIf(!RUN)("leave and re-enter (integration)", () => {
       isActive: true,
       isPrimary: true,
     });
+    await giveOpenEndedSchedule(models, { companyId, employeeId: empId, siteId });
 
     const base = Date.now() - 120 * MIN;
     const at = (min: number) => new Date(base + min * MIN).toISOString();
@@ -254,6 +258,42 @@ describe.skipIf(!RUN)("leave and re-enter (integration)", () => {
     expect(open, "employee was put back on the clock after checking out").toBe(0);
   }, 120_000);
 
+  it("refuses a check-in on a day with no shift scheduled", async () => {
+    // Observed in production: an employee with nothing rostered for the day was
+    // still able to check in. scheduleGate short-circuited with
+    // `if (!schedule) return { ok: true }`, reading the absence of a record as
+    // the absence of a rule — so rostering constrained nobody.
+    //
+    // Every other employee in this file deliberately has no schedule (to isolate
+    // the replay logic), which is exactly why the gap went unnoticed here too.
+    const empId = new Types.ObjectId();
+    await models.EmployeeSiteAssignment.create({
+      companyId,
+      employeeId: empId,
+      siteId,
+      isActive: true,
+      isPrimary: true,
+    });
+    // Deliberately NO schedule — that is the whole point of this test.
+
+    const result = await service.processCheckIn({
+      employeeId: String(empId),
+      companyId: String(companyId),
+      timezone: "Asia/Kolkata",
+      lat: center.lat,
+      lng: center.lng,
+      accuracyMeters: 5,
+      deviceId: "unscheduled-1",
+      capturedAt: new Date().toISOString(),
+    });
+
+    expect(result.ok, "checked in on a day with no schedule").toBe(false);
+    expect((result as { reason: string }).reason).toMatch(/no shift scheduled/i);
+    expect(
+      await models.AttendanceSession.countDocuments({ employeeId: empId })
+    ).toBe(0);
+  }, 120_000);
+
   it("ignores a STALE enter that predates the last check-out", async () => {
     // The opposite case the guard exists for: an ENTER queued on the device
     // before the employee left, flushed after the session already closed.
@@ -267,6 +307,7 @@ describe.skipIf(!RUN)("leave and re-enter (integration)", () => {
       isActive: true,
       isPrimary: true,
     });
+    await giveOpenEndedSchedule(models, { companyId, employeeId: empId, siteId });
 
     const base = Date.now() - 200 * MIN;
     const at = (min: number) => new Date(base + min * MIN).toISOString();
