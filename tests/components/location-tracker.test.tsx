@@ -106,4 +106,20 @@ describe("LocationTracker", () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(h.starts).toHaveLength(1);
   });
+
+  it("hands the shift end to the native service", async () => {
+    // The service enforces its own deadline: with the app closed nothing here
+    // evaluates the tracking window, so a service told only "start" would keep
+    // capturing all night.
+    const shiftEnd = Date.now() + 6 * 3600_000;
+    render(<LocationTracker active intervalMs={300_000} shiftEndMs={shiftEnd} />);
+    await waitFor(() => expect(h.starts).toHaveLength(1));
+    expect(h.starts[0].shiftEndMs).toBe(shiftEnd);
+  });
+
+  it("passes no deadline when the employee has no schedule", async () => {
+    render(<LocationTracker active intervalMs={300_000} shiftEndMs={null} />);
+    await waitFor(() => expect(h.starts).toHaveLength(1));
+    expect(h.starts[0].shiftEndMs).toBeNull();
+  });
 });

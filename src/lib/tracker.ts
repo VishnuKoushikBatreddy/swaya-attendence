@@ -70,6 +70,12 @@ export async function startTracker(opts: {
   active: boolean;
   deviceId?: string;
   intervalMs?: number;
+  /**
+   * Epoch ms when the scheduled shift ends. Handed to the native service so it
+   * can stop itself without JavaScript: with the app closed nothing evaluates
+   * the tracking window, so a service told only "start" would run all night.
+   */
+  shiftEndMs?: number | null;
   onError?: (e: Error) => void;
   onAutoCheckout?: () => void;
 } = { active: true }) {
@@ -81,7 +87,12 @@ export async function startTracker(opts: {
   if (isNative()) {
     // The cadence applies on Android too — both the native service and the
     // throttled plugin fallback honour it.
-    return startNative({ deviceId, intervalMs, onError: opts.onError });
+    return startNative({
+      deviceId,
+      intervalMs,
+      shiftEndMs: opts.shiftEndMs ?? null,
+      onError: opts.onError,
+    });
   }
   return startWeb({ deviceId, intervalMs });
 }
@@ -150,17 +161,24 @@ export async function stopTracker() {
 async function startNativeService(opts: {
   deviceId: string;
   intervalMs: number;
+  shiftEndMs?: number | null;
 }): Promise<boolean> {
   try {
     const { registerPlugin } = await import('@capacitor/core');
     const LocationTracking = registerPlugin<{
-      start(o: { intervalMs: number; deviceId: string }): Promise<{ started: boolean }>;
+      start(o: {
+        intervalMs: number;
+        deviceId: string;
+        shiftEndMs?: number;
+      }): Promise<{ started: boolean }>;
       stop(): Promise<void>;
       status(): Promise<{ running: boolean; queued: number }>;
     }>('LocationTracking');
     const res = await LocationTracking.start({
       intervalMs: opts.intervalMs,
       deviceId: opts.deviceId,
+      // 0 means "no scheduled end" — the service then runs until told to stop.
+      shiftEndMs: opts.shiftEndMs ?? 0,
     });
     return !!res?.started;
   } catch {
@@ -182,12 +200,19 @@ async function stopNativeService(): Promise<void> {
 async function startNative(opts: {
   deviceId: string;
   intervalMs: number;
+  shiftEndMs?: number | null;
   onError?: (e: Error) => void;
 }) {
   if (nativeWatcherId) return;
 
   // Preferred path: hand tracking to the native service and let JS go away.
-  if (await startNativeService({ deviceId: opts.deviceId, intervalMs: opts.intervalMs })) {
+  if (
+    await startNativeService({
+      deviceId: opts.deviceId,
+      intervalMs: opts.intervalMs,
+      shiftEndMs: opts.shiftEndMs,
+    })
+  ) {
     return;
   }
 

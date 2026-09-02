@@ -534,6 +534,9 @@ export default function EmployeePage() {
       <LocationTracker
         active={trackingActive}
         intervalMs={today?.pingIntervalMs}
+        // The native service enforces its own deadline: with the app closed
+        // nothing here is evaluating the tracking window.
+        shiftEndMs={scheduleEndMs}
         onAutoCheckout={handleAutoCheckout}
       />
       <div className="flex items-start justify-between gap-3">

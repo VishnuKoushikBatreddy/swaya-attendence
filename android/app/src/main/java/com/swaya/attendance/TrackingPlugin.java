@@ -37,11 +37,14 @@ public class TrackingPlugin extends Plugin {
         // five times as fast as the configured cadence.
         long intervalMs = call.getLong("intervalMs", LocationTrackingService.DEFAULT_INTERVAL_MS);
         String deviceId = call.getString("deviceId", "android");
-        LocationTrackingService.start(getContext(), intervalMs, deviceId);
+        // 0 = no scheduled end; the service then runs until explicitly stopped.
+        long shiftEndMs = call.getLong("shiftEndMs", 0L);
+        LocationTrackingService.start(getContext(), intervalMs, deviceId, shiftEndMs);
 
         JSObject res = new JSObject();
         res.put("started", true);
         res.put("intervalMs", intervalMs);
+        res.put("shiftEndMs", shiftEndMs);
         call.resolve(res);
     }
 

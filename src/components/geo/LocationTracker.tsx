@@ -13,6 +13,7 @@ import { getDeviceId } from "@/lib/device";
 export function LocationTracker({
   active,
   intervalMs,
+  shiftEndMs,
   onAutoCheckout,
 }: {
   active: boolean;
@@ -22,6 +23,12 @@ export function LocationTracker({
    * in which case the tracker falls back to its own default.
    */
   intervalMs?: number;
+  /**
+   * When the scheduled shift ends. Passed down to the native service so it can
+   * stop itself — with the app closed nothing on the JS side is evaluating the
+   * tracking window, so the service must know its own deadline.
+   */
+  shiftEndMs?: number | null;
   onAutoCheckout?: () => void;
 }) {
   // Keep the latest callback in a ref so starting/stopping doesn't depend on it.
@@ -62,6 +69,7 @@ export function LocationTracker({
         active: true,
         deviceId: getDeviceId(),
         intervalMs,
+        shiftEndMs,
         onAutoCheckout: () => onAutoRef.current?.(),
       }).catch(() => {
         // startTracker surfaces its own errors via onError when provided.
@@ -76,7 +84,7 @@ export function LocationTracker({
       wasActive.current = false;
       void stopTracker();
     }
-  }, [active, intervalMs]);
+  }, [active, intervalMs, shiftEndMs]);
 
   // SELF-HEAL. If the OS killed the process while the app was away, the employee
   // can come back to a checked-in screen with nothing actually tracking. Whenever
@@ -94,6 +102,7 @@ export function LocationTracker({
           active: true,
           deviceId: getDeviceId(),
           intervalMs,
+          shiftEndMs,
           onAutoCheckout: () => onAutoRef.current?.(),
         });
       } catch {
@@ -104,7 +113,7 @@ export function LocationTracker({
     void check();
     document.addEventListener("visibilitychange", check);
     return () => document.removeEventListener("visibilitychange", check);
-  }, [active, intervalMs]);
+  }, [active, intervalMs, shiftEndMs]);
 
   return null; // headless
 }

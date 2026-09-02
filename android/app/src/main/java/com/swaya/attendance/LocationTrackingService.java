@@ -66,6 +66,7 @@ public class LocationTrackingService extends Service {
     static final String ACTION_STOP = "com.swaya.attendance.STOP_TRACKING";
     static final String EXTRA_INTERVAL_MS = "intervalMs";
     static final String EXTRA_DEVICE_ID = "deviceId";
+    static final String EXTRA_SHIFT_END_MS = "shiftEndMs";
 
     private static final String CHANNEL_ID = "attendance_tracking";
     private static final int NOTIFICATION_ID = 4801;
@@ -112,6 +113,15 @@ public class LocationTrackingService extends Service {
 
     private long intervalMs = DEFAULT_INTERVAL_MS;
     private String deviceId = "android";
+    /**
+     * Epoch ms at which the scheduled shift ends, or 0 when there is no schedule.
+     *
+     * The service must know its own deadline. With the app closed, nothing on the
+     * JavaScript side is evaluating the tracking window, so a service told only
+     * "start" would keep capturing all night and flatten the battery. Persisted
+     * with the rest of the config so a sticky restart still honours it.
+     */
+    private volatile long shiftEndMs = 0L;
     private volatile Location lastFix = null;
     private volatile long lastFixAt = 0L;
     private volatile long lastFlushAt = 0L;
@@ -157,12 +167,21 @@ public class LocationTrackingService extends Service {
         long requested = saved.getLong("intervalMs", DEFAULT_INTERVAL_MS);
         String savedDevice = saved.getString("deviceId", null);
         if (savedDevice != null) deviceId = savedDevice;
+        shiftEndMs = saved.getLong("shiftEndMs", shiftEndMs);
 
         if (intent != null) {
             // An explicit start wins over the stored config and refreshes it.
             requested = intent.getLongExtra(EXTRA_INTERVAL_MS, requested);
             String d = intent.getStringExtra(EXTRA_DEVICE_ID);
             if (d != null) deviceId = d;
+            shiftEndMs = intent.getLongExtra(EXTRA_SHIFT_END_MS, shiftEndMs);
+        }
+
+        // Already past the deadline before we even begin — nothing to do.
+        if (shiftEndMs > 0 && System.currentTimeMillis() >= shiftEndMs) {
+            Log.d(TAG, "shift already ended; not starting");
+            stopTracking();
+            return START_NOT_STICKY;
         }
         long previousInterval = intervalMs;
         intervalMs = Math.max(MIN_INTERVAL_MS, Math.min(MAX_INTERVAL_MS, requested));
@@ -376,6 +395,17 @@ public class LocationTrackingService extends Service {
             public void run() {
                 try {
                     if (!running) return;
+
+                    // The shift is over: stop ourselves rather than waiting for
+                    // the app to be reopened. This is the only thing that ends
+                    // tracking when the employee never opens the app again.
+                    if (shiftEndMs > 0 && System.currentTimeMillis() >= shiftEndMs) {
+                        Log.d(TAG, "scheduled shift end reached — stopping tracking");
+                        PingUploader.flush(getApplicationContext());
+                        mainHandler.post(() -> stopTracking());
+                        return;
+                    }
+
                     long reference = lastFixAt > 0 ? lastFixAt : serviceStartedAt;
                     long silentMs = System.currentTimeMillis() - reference;
                     if (silentMs > intervalMs * WATCHDOG_MISSED_INTERVALS) {
@@ -590,15 +620,20 @@ public class LocationTrackingService extends Service {
 
     // ---------------------------------------------------------------- control
 
-    static void start(Context ctx, long intervalMs, String deviceId) {
+    static void start(Context ctx, long intervalMs, String deviceId, long shiftEndMs) {
         Intent i = new Intent(ctx, LocationTrackingService.class);
         i.setAction(ACTION_START);
         i.putExtra(EXTRA_INTERVAL_MS, intervalMs);
         i.putExtra(EXTRA_DEVICE_ID, deviceId);
+        i.putExtra(EXTRA_SHIFT_END_MS, shiftEndMs);
         // Persist so a restart (reboot, or Android recreating a sticky service)
         // can resume with the same configuration.
         SharedPreferences p = ctx.getSharedPreferences("TrackingConfig", Context.MODE_PRIVATE);
-        p.edit().putLong("intervalMs", intervalMs).putString("deviceId", deviceId).apply();
+        p.edit()
+            .putLong("intervalMs", intervalMs)
+            .putString("deviceId", deviceId)
+            .putLong("shiftEndMs", shiftEndMs)
+            .apply();
         ContextCompat.startForegroundService(ctx, i);
     }
 
@@ -615,6 +650,10 @@ public class LocationTrackingService extends Service {
     /** Resume with the last known configuration — used after a reboot. */
     static void restartFromSavedConfig(Context ctx) {
         SharedPreferences p = ctx.getSharedPreferences("TrackingConfig", Context.MODE_PRIVATE);
-        start(ctx, p.getLong("intervalMs", DEFAULT_INTERVAL_MS), p.getString("deviceId", "android"));
+        start(
+            ctx,
+            p.getLong("intervalMs", DEFAULT_INTERVAL_MS),
+            p.getString("deviceId", "android"),
+            p.getLong("shiftEndMs", 0L));
     }
 }
