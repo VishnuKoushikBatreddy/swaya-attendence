@@ -45,6 +45,15 @@ final class PingUploader {
      * @return true when the queue was fully drained.
      */
     static boolean flush(Context ctx) {
+        // Reset FIRST, before any early return.
+        //
+        // This used to sit below the two returns underneath, so a flush that
+        // found an empty queue left the flag at whatever the previous flush set
+        // it to. Once it had been true even once, the very next empty flush made
+        // the service read a stale true and stop tracking for a check-out that
+        // had already been handled.
+        lastBatchAutoCheckedOut = false;
+
         PingQueue.purgeExpired(ctx, System.currentTimeMillis());
         if (PingQueue.size(ctx) == 0) return true;
 
@@ -58,8 +67,6 @@ final class PingUploader {
             PingQueue.clear(ctx);
             return true;
         }
-
-        lastBatchAutoCheckedOut = false;
 
         while (PingQueue.size(ctx) > 0) {
             JSONArray batch = PingQueue.peek(ctx, BATCH_SIZE);

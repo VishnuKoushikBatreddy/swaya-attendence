@@ -75,5 +75,27 @@ AttendanceSessionSchema.index({ status: 1, checkInAt: 1 });
 AttendanceSessionSchema.index({ attendanceDayId: 1, checkInAt: 1 });
 AttendanceSessionSchema.index({ checkInLocation: "2dsphere" });
 
+// AT MOST ONE OPEN SESSION PER EMPLOYEE — enforced by the database.
+//
+// processCheckIn already refuses when it finds an open session, but that is a
+// read followed by a write with nothing between them: two check-ins that arrive
+// together both read "none open" and both insert. It is not theoretical. The
+// native geofence ENTER and the app's own auto check-in fired within the same
+// second and produced two live sessions for one employee, which then split that
+// person's pings across two records.
+//
+// A partial unique index is the only thing that can actually hold this
+// invariant, because it is evaluated at insert time inside the database.
+// Completed and auto-closed sessions are excluded, so an employee may still
+// have many sessions per day — just never two open at once.
+AttendanceSessionSchema.index(
+  { employeeId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { status: { $in: ["active", "flagged"] } },
+    name: "one_open_session_per_employee",
+  }
+);
+
 export const AttendanceSession =
   (models.AttendanceSession as any) || model("AttendanceSession", AttendanceSessionSchema);

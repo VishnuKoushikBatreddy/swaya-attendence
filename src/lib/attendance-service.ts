@@ -257,26 +257,42 @@ export async function processCheckIn(input: CheckInInput): Promise<CheckInResult
     workDate,
   }).lean();
 
-  // Create session
-  const session = await AttendanceSession.create({
-    attendanceDayId: day._id,
-    companyId: new Types.ObjectId(input.companyId),
-    employeeId: new Types.ObjectId(input.employeeId),
-    siteId: found.site._id,
-    checkInAt: at,
-    checkInLocation: { type: "Point", coordinates: [input.lng, input.lat] },
-    checkInAccuracyMeters: input.accuracyMeters,
-    checkInDistanceMeters: found.distance,
-    // Freeze the geofence for this session at the moment of check-in.
-    geofence: {
-      lat: found.site.location.coordinates[1],
-      lng: found.site.location.coordinates[0],
-      radiusMeters: found.site.radiusMeters,
-    },
-    status: input.isMockLocation ? "flagged" : "active",
-    deviceId: input.deviceId,
-    appVersion: input.appVersion,
-  });
+  // Create session.
+  //
+  // The openSession check above is a read followed by a write, so two check-ins
+  // arriving together both pass it. The `one_open_session_per_employee` partial
+  // unique index is what actually holds the invariant, and it rejects the loser
+  // with a duplicate-key error. Treat that as the same outcome the guard would
+  // have produced, rather than letting withApi map it to a confusing 409
+  // "Already exists" — the offline queue drops 4xx, so the replay stops either
+  // way, but the reason should be truthful.
+  let session;
+  try {
+    session = await AttendanceSession.create({
+      attendanceDayId: day._id,
+      companyId: new Types.ObjectId(input.companyId),
+      employeeId: new Types.ObjectId(input.employeeId),
+      siteId: found.site._id,
+      checkInAt: at,
+      checkInLocation: { type: "Point", coordinates: [input.lng, input.lat] },
+      checkInAccuracyMeters: input.accuracyMeters,
+      checkInDistanceMeters: found.distance,
+      // Freeze the geofence for this session at the moment of check-in.
+      geofence: {
+        lat: found.site.location.coordinates[1],
+        lng: found.site.location.coordinates[0],
+        radiusMeters: found.site.radiusMeters,
+      },
+      status: input.isMockLocation ? "flagged" : "active",
+      deviceId: input.deviceId,
+      appVersion: input.appVersion,
+    });
+  } catch (err: unknown) {
+    if ((err as { code?: number })?.code === 11000) {
+      return { ok: false, reason: "already_checked_in" };
+    }
+    throw err;
+  }
 
   // First ping
   await LocationPing.create({

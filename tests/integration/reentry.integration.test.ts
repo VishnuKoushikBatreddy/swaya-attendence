@@ -146,6 +146,51 @@ describe.skipIf(!RUN)("leave and re-enter (integration)", () => {
     expect(day.totalOutsideSeconds, "the off-clock gap must not count as outside").toBe(0);
   }, 120_000);
 
+  it("never opens a SECOND session when two check-ins race", async () => {
+    // The native geofence ENTER and the app's own auto check-in fired within the
+    // same second in production and BOTH created a session, because
+    // processCheckIn's "already checked in" guard is a read followed by a write
+    // with nothing between them. That split one employee's pings across two
+    // records. The one_open_session_per_employee partial unique index is what
+    // actually holds the invariant, inside the database at insert time.
+    const empId = new Types.ObjectId();
+    await models.EmployeeSiteAssignment.create({
+      companyId,
+      employeeId: empId,
+      siteId,
+      isActive: true,
+      isPrimary: true,
+    });
+
+    const base = Date.now() - 90 * MIN;
+    const call = (min: number, device: string) =>
+      service.processCheckIn({
+        employeeId: String(empId),
+        companyId: String(companyId),
+        timezone: "Asia/Kolkata",
+        lat: center.lat,
+        lng: center.lng,
+        accuracyMeters: 5,
+        deviceId: device,
+        capturedAt: new Date(base + min * MIN).toISOString(),
+      });
+
+    // Fire both at once, exactly as the two paths did.
+    const [a, b] = await Promise.all([call(0, "geofence"), call(1, "web-abc")]);
+
+    const ok = [a, b].filter((r) => r.ok);
+    const refused = [a, b].filter((r) => !r.ok);
+    expect(ok, "exactly one check-in may succeed").toHaveLength(1);
+    expect(refused).toHaveLength(1);
+    expect((refused[0] as any).reason).toBe("already_checked_in");
+
+    const open = await models.AttendanceSession.countDocuments({
+      employeeId: empId,
+      status: { $in: ["active", "flagged"] },
+    });
+    expect(open, "employee ended up with more than one open session").toBe(1);
+  }, 120_000);
+
   it("ignores a STALE enter that predates the last check-out", async () => {
     // The opposite case the guard exists for: an ENTER queued on the device
     // before the employee left, flushed after the session already closed.

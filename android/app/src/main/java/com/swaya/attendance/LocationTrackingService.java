@@ -27,6 +27,7 @@ import com.google.android.gms.location.LocationRequest;
 import com.google.android.gms.location.LocationResult;
 import com.google.android.gms.location.LocationServices;
 import com.google.android.gms.location.Priority;
+import com.google.android.gms.tasks.CancellationTokenSource;
 
 import org.json.JSONObject;
 
@@ -82,6 +83,13 @@ public class LocationTrackingService extends Service {
     /** Upload attempt cadence, independent of capture. */
     private static final long FLUSH_INTERVAL_MS = 5 * 60_000L;
 
+    /**
+     * How many capture intervals of total silence before the watchdog decides
+     * the location provider has stopped delivering and re-arms it. Three is
+     * forgiving enough to ride out an ordinary missed fix.
+     */
+    private static final int WATCHDOG_MISSED_INTERVALS = 3;
+
     /** Flush early once the buffer reaches a full batch. */
     private static final int FLUSH_AT_DEPTH = PingUploader.BATCH_SIZE;
 
@@ -100,6 +108,8 @@ public class LocationTrackingService extends Service {
     private volatile long lastFixAt = 0L;
     private volatile long lastFlushAt = 0L;
     private volatile int consecutiveFixFailures = 0;
+    private volatile long serviceStartedAt = 0L;
+    private Runnable watchdog;
 
     /** Whether the service is currently tracking — read by the plugin. */
     static volatile boolean running = false;
@@ -159,6 +169,8 @@ public class LocationTrackingService extends Service {
 
         requestUpdates();
         running = true;
+        if (serviceStartedAt == 0L) serviceStartedAt = System.currentTimeMillis();
+        startWatchdog();
 
         // START_STICKY: if Android reclaims the process under memory pressure it
         // recreates the service with a null intent. START_REDELIVER_INTENT would
@@ -188,17 +200,26 @@ public class LocationTrackingService extends Service {
         callback = new LocationCallback() {
             @Override
             public void onLocationResult(LocationResult result) {
-                Location loc = result.getLastLocation();
-                if (loc == null) {
-                    consecutiveFixFailures++;
-                    return;
+                // Outermost guard for the whole capture path. This callback is
+                // delivered on the worker looper, so anything thrown here that
+                // is not caught kills the process and with it the foreground
+                // service — one bad fix would end tracking for the shift. A
+                // dropped fix costs five minutes; a dead service costs the day.
+                try {
+                    Location loc = result.getLastLocation();
+                    if (loc == null) {
+                        consecutiveFixFailures++;
+                        return;
+                    }
+                    consecutiveFixFailures = 0;
+                    lastFix = loc;
+                    lastFixAt = System.currentTimeMillis();
+                    enqueue(loc);
+                    maybeFlush();
+                    updateNotification();
+                } catch (Throwable t) {
+                    Log.e(TAG, "location callback failed — tracking continues", t);
                 }
-                consecutiveFixFailures = 0;
-                lastFix = loc;
-                lastFixAt = System.currentTimeMillis();
-                enqueue(loc);
-                maybeFlush();
-                updateNotification();
             }
         };
 
@@ -244,14 +265,31 @@ public class LocationTrackingService extends Service {
         lastFlushAt = now;
 
         workerHandler.post(() -> {
-            boolean drained = PingUploader.flush(getApplicationContext());
-            if (PingUploader.lastBatchAutoCheckedOut) {
-                // The server closed the session — keep tracking pointless.
-                Log.d(TAG, "server auto-checked-out; stopping tracking");
-                mainHandler.post(this::stopTracking);
-                return;
+            // EVERYTHING here is inside a catch-all on purpose.
+            //
+            // This runs on a HandlerThread, and an uncaught exception on a
+            // background thread does not merely abandon the upload — it takes
+            // the entire process down, foreground service included. Tracking
+            // would then stop dead after a single flush with nothing in the app
+            // to show why, which is exactly the failure this guards against.
+            // Losing one upload is recoverable; losing the service is not, since
+            // the queue keeps the pings and the next tick retries them.
+            try {
+                boolean drained = PingUploader.flush(getApplicationContext());
+                if (PingUploader.lastBatchAutoCheckedOut) {
+                    // The server closed the session — keep tracking pointless.
+                    Log.d(TAG, "server auto-checked-out; stopping tracking");
+                    mainHandler.post(this::stopTracking);
+                    return;
+                }
+                if (!drained) Log.d(TAG, "flush incomplete; will retry");
+            } catch (Throwable t) {
+                // Roll the clock back so the next fix retries immediately rather
+                // than waiting out a full flush interval for a failure that may
+                // well be transient.
+                lastFlushAt = 0L;
+                Log.e(TAG, "flush failed — tracking continues, pings stay queued", t);
             }
-            if (!drained) Log.d(TAG, "flush incomplete; will retry");
         });
     }
 
@@ -265,8 +303,112 @@ public class LocationTrackingService extends Service {
                 == PackageManager.PERMISSION_GRANTED;
     }
 
+    /**
+     * Recovers from the two ways tracking dies quietly.
+     *
+     * FusedLocationProviderClient can simply stop delivering — Doze, an OEM
+     * battery manager, or a provider hiccup — and nothing noticed: the service
+     * stayed alive with its notification showing while producing no fixes at
+     * all. consecutiveFixFailures was counted and then never acted upon.
+     *
+     * The second problem is subtler. maybeFlush() only ran from
+     * onLocationResult, so NO FIX meant NO UPLOAD: anything already queued sat
+     * there indefinitely, even with a working network. This flushes on its own
+     * schedule so buffered pings drain regardless.
+     */
+    private void startWatchdog() {
+        stopWatchdog();
+        watchdog = new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (!running) return;
+                    long reference = lastFixAt > 0 ? lastFixAt : serviceStartedAt;
+                    long silentMs = System.currentTimeMillis() - reference;
+                    if (silentMs > intervalMs * WATCHDOG_MISSED_INTERVALS) {
+                        Log.w(TAG, "no fix for " + (silentMs / 1000) + "s — re-arming location updates");
+                        reArmUpdates();
+                        // Re-arming alone is not enough. The stream is
+                        // PRIORITY_HIGH_ACCURACY, which is GPS-first and can
+                        // starve indefinitely indoors — rebuilding a request
+                        // that is already starved just starves again. Force one
+                        // coarse fix so the shift is not recorded as a silent
+                        // hole. Roughly 100m accuracy is too imprecise to move
+                        // the geofence state (effectiveInsideState carries the
+                        // previous state forward for an unreliable reading), but
+                        // it proves the employee's phone is alive, which a
+                        // missing ping cannot.
+                        forceCoarseFix();
+                    }
+                    // Drain independently of captures, so a queue that filled up
+                    // before the network returned does not wait for a new fix.
+                    PingUploader.flush(getApplicationContext());
+                } catch (Throwable t) {
+                    Log.e(TAG, "watchdog tick failed — tracking continues", t);
+                } finally {
+                    if (running && workerHandler != null) {
+                        workerHandler.postDelayed(this, intervalMs);
+                    }
+                }
+            }
+        };
+        workerHandler.postDelayed(watchdog, intervalMs);
+    }
+
+    /**
+     * One-shot balanced-accuracy fix, used only when the high-accuracy stream
+     * has gone silent. Best-effort: a failure here just means the next watchdog
+     * tick tries again.
+     */
+    private void forceCoarseFix() {
+        if (!hasLocationPermission()) return;
+        try {
+            CancellationTokenSource cts = new CancellationTokenSource();
+            client.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, cts.getToken())
+                .addOnSuccessListener(loc -> {
+                    if (loc == null) return;
+                    try {
+                        lastFix = loc;
+                        lastFixAt = System.currentTimeMillis();
+                        enqueue(loc);
+                        PingUploader.flush(getApplicationContext());
+                        updateNotification();
+                        Log.d(TAG, "forced coarse fix delivered");
+                    } catch (Throwable t) {
+                        Log.e(TAG, "forced fix handling failed", t);
+                    }
+                })
+                .addOnFailureListener(e -> Log.w(TAG, "forced coarse fix failed", e));
+        } catch (Throwable t) {
+            Log.e(TAG, "could not request a forced fix", t);
+        }
+    }
+
+    private void stopWatchdog() {
+        if (watchdog != null && workerHandler != null) {
+            workerHandler.removeCallbacks(watchdog);
+        }
+        watchdog = null;
+    }
+
+    /** Tear the location request down and build it again from scratch. */
+    private void reArmUpdates() {
+        try {
+            if (callback != null) client.removeLocationUpdates(callback);
+        } catch (Exception ignore) {
+            // Already gone — rebuilding below is still the right move.
+        }
+        callback = null;
+        try {
+            requestUpdates();
+        } catch (Throwable t) {
+            Log.e(TAG, "could not re-arm location updates", t);
+        }
+    }
+
     private void stopTracking() {
         running = false;
+        stopWatchdog();
         if (callback != null) {
             try { client.removeLocationUpdates(callback); } catch (Exception ignore) {}
             callback = null;
