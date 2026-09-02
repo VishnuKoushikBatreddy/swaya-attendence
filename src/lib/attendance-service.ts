@@ -524,7 +524,41 @@ export async function processGeofenceEnter(opts: {
     if (superseded) return { ok: true as const, superseded: true };
   }
 
+  // A MANUAL check-out means it. The client-side auto check-in already refuses
+  // after one (evaluateAutoCheckIn -> MANUAL_CHECKOUT), but this path did not,
+  // and the two disagreeing had a visible consequence: the OS geofence is
+  // registered with INITIAL_TRIGGER_ENTER, so it fires ENTER the moment it is
+  // registered whenever the phone is already inside the fence. Every app
+  // relaunch or re-registration therefore replayed a check-in — someone who
+  // deliberately checked out while still on site was put back on the clock
+  // seconds later, with nothing on screen explaining why.
+  //
+  // Only "completed" counts: an auto_closed session (geofence exit, ping gap,
+  // shift end) is exactly the case where returning SHOULD check them back in.
+  //
+  // Scoped to the CURRENT work day, like the client is — yesterday's manual
+  // check-out must not suppress this morning's arrival.
   const timezone = await getCompanyTimezone(opts.companyId);
+  const at = opts.capturedAt
+    ? new Date(clampEventTimeToNow(new Date(opts.capturedAt).getTime(), Date.now()))
+    : new Date();
+  const workDate = getWorkDateInTimezone(at, timezone);
+  const today = await AttendanceDay.findOne({
+    employeeId: new Types.ObjectId(opts.employeeId),
+    workDate,
+  })
+    .select("_id")
+    .lean();
+  if (today) {
+    const lastToday = await AttendanceSession.findOne({ attendanceDayId: today._id })
+      .sort({ checkInAt: -1 })
+      .select("status")
+      .lean();
+    if (lastToday?.status === "completed") {
+      return { ok: true as const, manualCheckout: true };
+    }
+  }
+
   return processCheckIn({
     employeeId: opts.employeeId,
     companyId: opts.companyId,
@@ -536,11 +570,10 @@ export async function processGeofenceEnter(opts: {
     // Same clamp as the exit path: a fast device clock must not back-date the
     // check-in into the future, which evaluateLateness would then compare
     // against the shift start.
-    capturedAt: opts.capturedAt
-      ? new Date(
-          clampEventTimeToNow(new Date(opts.capturedAt).getTime(), Date.now())
-        ).toISOString()
-      : undefined,
+    // `at` above is already clamped to now, so a fast device clock cannot
+    // back-date the check-in into the future where evaluateLateness would then
+    // compare it against the shift start.
+    capturedAt: opts.capturedAt ? at.toISOString() : undefined,
     geofenceTriggered: true,
   });
 }
@@ -1254,12 +1287,26 @@ export async function processPings(opts: {
   if (env.PING_GAP_CHECKOUT_ENABLED && lastPing && sorted.length) {
     const lastPingMs = new Date(lastPing.capturedAt).getTime();
     const nextMs = sorted[0].capturedAt ? new Date(sorted[0].capturedAt).getTime() : Date.now();
+
+    // Ask the OTHER system whether they actually left. A ping gap only means
+    // tracking stopped; the OS geofence is the authority on departure, and when
+    // the two disagree the geofence wins. Without this a starved GPS closed a
+    // session while the geofence still had the employee 24m from the centre.
+    const sawExitAfterLastPing =
+      (await GeofenceEvent.countDocuments({
+        sessionId: session._id,
+        eventType: "exited_site",
+        eventAt: { $gte: new Date(lastPingMs) },
+      })) > 0;
+
     if (
       shouldGapCheckout({
         checkInMs: new Date(session.checkInAt).getTime(),
         lastPingMs,
         nextPingMs: nextMs,
         gapThresholdMs: env.PING_GAP_CHECKOUT_MINUTES * 60_000,
+        lastPingWasInside: !!lastPing.isInsideGeofence,
+        sawExitAfterLastPing,
       })
     ) {
       await finalizeSession({

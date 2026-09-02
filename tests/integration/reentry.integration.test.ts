@@ -191,6 +191,69 @@ describe.skipIf(!RUN)("leave and re-enter (integration)", () => {
     expect(open, "employee ended up with more than one open session").toBe(1);
   }, 120_000);
 
+  it("does not undo a MANUAL check-out when the geofence re-registers", async () => {
+    // Seen in production: a manual check-out at 10:51:03 was followed by an
+    // auto check-in at 10:51:14 — eleven seconds later, without the employee
+    // going anywhere. GeofenceHelper registers with INITIAL_TRIGGER_ENTER, so
+    // the OS fires ENTER the moment the geofence is (re-)registered whenever the
+    // phone is already inside it. Every app relaunch replayed a check-in.
+    //
+    // evaluateAutoCheckIn already refused after a manual check-out; this path
+    // did not, and the two disagreeing is what produced the loop.
+    const empId = new Types.ObjectId();
+    await models.EmployeeSiteAssignment.create({
+      companyId,
+      employeeId: empId,
+      siteId,
+      isActive: true,
+      isPrimary: true,
+    });
+
+    const base = Date.now() - 120 * MIN;
+    const at = (min: number) => new Date(base + min * MIN).toISOString();
+
+    await service.processCheckIn({
+      employeeId: String(empId),
+      companyId: String(companyId),
+      timezone: "Asia/Kolkata",
+      lat: center.lat,
+      lng: center.lng,
+      accuracyMeters: 5,
+      deviceId: "manual-1",
+      capturedAt: at(0),
+    });
+    // The employee deliberately checks out, still standing on site.
+    await service.processCheckOut({
+      employeeId: String(empId),
+      companyId: String(companyId),
+      timezone: "Asia/Kolkata",
+      lat: center.lat,
+      lng: center.lng,
+      accuracyMeters: 5,
+      capturedAt: at(30),
+    });
+    const closed: any = await models.AttendanceSession.findOne({ employeeId: empId }).lean();
+    expect(closed.status).toBe("completed"); // manual, not auto
+
+    // The app relaunches; the geofence is registered and immediately fires
+    // ENTER because the phone never left.
+    const replay: any = await service.processGeofenceEnter({
+      employeeId: String(empId),
+      companyId: String(companyId),
+      lat: center.lat,
+      lng: center.lng,
+      accuracyMeters: 8,
+      capturedAt: at(30.2),
+    });
+
+    expect(replay.manualCheckout, "an INITIAL_TRIGGER ENTER undid a manual check-out").toBe(true);
+    const open = await models.AttendanceSession.countDocuments({
+      employeeId: empId,
+      status: { $in: ["active", "flagged"] },
+    });
+    expect(open, "employee was put back on the clock after checking out").toBe(0);
+  }, 120_000);
+
   it("ignores a STALE enter that predates the last check-out", async () => {
     // The opposite case the guard exists for: an ENTER queued on the device
     // before the employee left, flushed after the session already closed.

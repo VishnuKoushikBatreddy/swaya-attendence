@@ -396,12 +396,39 @@ export function shouldGapCheckout(opts: {
   lastPingMs: number;
   nextPingMs: number;
   gapThresholdMs: number;
+  /**
+   * Geofence state at the last ping we did receive. When the employee was
+   * INSIDE and the OS never reported them leaving, the silence is a tracking
+   * failure rather than a departure.
+   */
+  lastPingWasInside?: boolean;
+  /** Whether the OS geofence reported an EXIT after that last ping. */
+  sawExitAfterLastPing?: boolean;
 }): boolean {
   if (!isPingGapCheckout(opts.lastPingMs, opts.nextPingMs, opts.gapThresholdMs)) {
     return false;
   }
   // Only close when there is at least one ping AFTER check-in to close at.
-  return opts.lastPingMs > opts.checkInMs;
+  if (opts.lastPingMs <= opts.checkInMs) return false;
+
+  // TWO SYSTEMS, ONE ANSWER.
+  //
+  // A ping gap means "tracking stopped", which is not the same as "the employee
+  // left" — and the OS geofence is the authority on the second question. In
+  // production a session was closed for silence while the geofence still had the
+  // employee 24m from the centre with no EXIT ever fired: their GPS had starved
+  // indoors. They lost 22 minutes and had to check in again, for a failure that
+  // was the phone's, not theirs.
+  //
+  // So only treat silence as a departure when something actually says they left.
+  // If they were last seen inside and no EXIT followed, hold the session open:
+  // the gap is already reported honestly as offline time, a real departure still
+  // closes it via the EXIT or the sustained-absence rule, and the end of the
+  // shift closes it regardless.
+  if (opts.lastPingWasInside === true && opts.sawExitAfterLastPing === false) {
+    return false;
+  }
+  return true;
 }
 
 /**

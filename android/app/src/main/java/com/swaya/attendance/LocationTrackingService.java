@@ -90,6 +90,14 @@ public class LocationTrackingService extends Service {
      */
     private static final int WATCHDOG_MISSED_INTERVALS = 3;
 
+    /**
+     * How often to confirm the tracking notification is still on screen. Far
+     * shorter than the capture interval: from Android 14 a user can swipe it
+     * away, and tracking that keeps running with no visible sign of it is not a
+     * state this app should sit in for five minutes.
+     */
+    private static final long NOTIFICATION_KEEPALIVE_MS = 30_000L;
+
     /** Flush early once the buffer reaches a full batch. */
     private static final int FLUSH_AT_DEPTH = PingUploader.BATCH_SIZE;
 
@@ -110,6 +118,7 @@ public class LocationTrackingService extends Service {
     private volatile int consecutiveFixFailures = 0;
     private volatile long serviceStartedAt = 0L;
     private Runnable watchdog;
+    private Runnable notificationKeepalive;
 
     /** Whether the service is currently tracking — read by the plugin. */
     static volatile boolean running = false;
@@ -171,6 +180,7 @@ public class LocationTrackingService extends Service {
         running = true;
         if (serviceStartedAt == 0L) serviceStartedAt = System.currentTimeMillis();
         startWatchdog();
+        startNotificationKeepalive();
 
         // START_STICKY: if Android reclaims the process under memory pressure it
         // recreates the service with a null intent. START_REDELIVER_INTENT would
@@ -316,6 +326,32 @@ public class LocationTrackingService extends Service {
      * there indefinitely, even with a working network. This flushes on its own
      * schedule so buffered pings drain regardless.
      */
+    private void startNotificationKeepalive() {
+        stopNotificationKeepalive();
+        notificationKeepalive = new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    keepNotificationVisible();
+                } catch (Throwable t) {
+                    Log.e(TAG, "notification keepalive failed", t);
+                } finally {
+                    if (running && mainHandler != null) {
+                        mainHandler.postDelayed(this, NOTIFICATION_KEEPALIVE_MS);
+                    }
+                }
+            }
+        };
+        mainHandler.postDelayed(notificationKeepalive, NOTIFICATION_KEEPALIVE_MS);
+    }
+
+    private void stopNotificationKeepalive() {
+        if (notificationKeepalive != null && mainHandler != null) {
+            mainHandler.removeCallbacks(notificationKeepalive);
+        }
+        notificationKeepalive = null;
+    }
+
     private void startWatchdog() {
         stopWatchdog();
         watchdog = new Runnable() {
@@ -408,6 +444,7 @@ public class LocationTrackingService extends Service {
 
     private void stopTracking() {
         running = false;
+        stopNotificationKeepalive();
         stopWatchdog();
         if (callback != null) {
             try { client.removeLocationUpdates(callback); } catch (Exception ignore) {}
@@ -466,8 +503,15 @@ public class LocationTrackingService extends Service {
                 .setSmallIcon(android.R.drawable.ic_menu_mylocation)
                 .setContentTitle("Attendance tracking active")
                 .setContentText(text)
+                // Ongoing stops the swipe on Android 13 and below. From 14 the
+                // platform lets users dismiss a foreground-service notification
+                // regardless, which is why keepNotificationVisible() below
+                // re-posts it — tracking must never run invisibly.
                 .setOngoing(true)
                 .setSilent(true)
+                // Show at once instead of after the platform's 10-second grace
+                // period, so the employee sees tracking start when they check in.
+                .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
                 .setPriority(NotificationCompat.PRIORITY_LOW);
         if (pi != null) b.setContentIntent(pi);
         return b.build();
@@ -478,6 +522,35 @@ public class LocationTrackingService extends Service {
      * is genuinely working, which is both reassurance and the main reason they
      * stop swiping the app away.
      */
+    /**
+     * Re-post the tracking notification if it is no longer showing.
+     *
+     * Android 14 lets users swipe away a foreground-service notification. The
+     * service survives that, but the employee then has no indication their
+     * location is being recorded — and no way back into the app from the shade.
+     * Silently tracking someone who believes they have stopped it is not a state
+     * this app should ever be in, so the notification is restored.
+     *
+     * getActiveNotifications() is API 23+; below that the notification cannot be
+     * dismissed anyway, so there is nothing to restore.
+     */
+    private void keepNotificationVisible() {
+        if (!running) return;
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return;
+        try {
+            NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (nm == null) return;
+            for (android.service.notification.StatusBarNotification sbn : nm.getActiveNotifications()) {
+                if (sbn.getId() == NOTIFICATION_ID) return; // still showing
+            }
+            Log.w(TAG, "tracking notification was dismissed — restoring");
+            updateNotification();
+        } catch (Throwable t) {
+            // Never let a cosmetic restore take the service down.
+            Log.e(TAG, "could not check notification visibility", t);
+        }
+    }
+
     private void updateNotification() {
         String text;
         if (lastFixAt == 0) {
