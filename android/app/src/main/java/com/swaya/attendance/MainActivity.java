@@ -10,6 +10,7 @@ public class MainActivity extends BridgeActivity {
         // Register the local native plugins before the bridge starts.
         registerPlugin(GeofencePlugin.class);
         registerPlugin(TrackingPlugin.class);
+        registerPlugin(DeviceSetupPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

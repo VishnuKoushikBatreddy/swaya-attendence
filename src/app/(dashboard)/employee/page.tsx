@@ -12,6 +12,7 @@ import { formatDuration, formatTime, formatTimeWithSeconds } from "@/lib/utils";
 import { evaluateAutoCheckIn, isWithinTrackingWindow } from "@/lib/attendance-logic";
 import dynamic from "next/dynamic";
 import { LocationTracker } from "@/components/geo/LocationTracker";
+import { TrackingHealthCard } from "@/components/geo/TrackingHealthCard";
 import { getDeviceId } from "@/lib/device";
 import { readBatteryPercent, readNetworkType, subscribeNetwork } from "@/lib/device-status";
 import { getCurrentLocation } from "@/lib/geolocation";
@@ -531,6 +532,11 @@ export default function EmployeePage() {
 
   return (
     <div className="space-y-6">
+      {/* Renders nothing unless this device is configured in a way that would
+          silently stop tracking. It is the only failure the employee cannot
+          otherwise see. */}
+      <TrackingHealthCard />
+
       <LocationTracker
         active={trackingActive}
         intervalMs={today?.pingIntervalMs}

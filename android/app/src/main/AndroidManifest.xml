@@ -82,6 +82,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Lets the app show the one-tap "allow this app to run in the background"
+         dialog instead of walking the employee through Settings. Without the
+         exemption an OEM battery manager stops the tracking service the moment
+         the app leaves recents, which is the single most common cause of a shift
+         recording no location at all. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <!-- Optional — required to show the foreground-service notification
          on Android 13+. -->
