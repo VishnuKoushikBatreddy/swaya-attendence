@@ -72,6 +72,21 @@ export const POST = withApi(async (req: NextRequest) => {
     return ok({ received: 0, dropped, reason: result.reason, autoCheckedOut: false });
   }
 
+  // Surfaces the batch in the platform logs, matching what /api/geofence-event
+  // already does. Without this the route was completely silent, so a working
+  // native service looked indistinguishable from a dead one: the geofence
+  // endpoint logged loudly on every crossing while pings arriving every five
+  // minutes produced nothing at all.
+  //
+  // appState is the useful field — only LocationTrackingService can report
+  // "killed", because by definition no JavaScript is running to say so. Seeing
+  // it here is the proof that tracking survived the app being swiped away.
+  const states = [...new Set(fresh.map((p) => (p as { appState?: string }).appState ?? "unknown"))];
+  // eslint-disable-next-line no-console
+  console.log(
+    `[native-pings] employee=${payload.employeeId} received=${result.received} dropped=${dropped} appState=${states.join(",")} autoCheckedOut=${result.autoCheckedOut ?? false}`
+  );
+
   return ok({
     received: result.received,
     dropped,
