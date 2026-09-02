@@ -164,7 +164,24 @@ public class LocationTrackingService extends Service {
             String d = intent.getStringExtra(EXTRA_DEVICE_ID);
             if (d != null) deviceId = d;
         }
+        long previousInterval = intervalMs;
         intervalMs = Math.max(MIN_INTERVAL_MS, Math.min(MAX_INTERVAL_MS, requested));
+
+        // A repeat start (the app was reopened, or the server changed the
+        // cadence) must not reset the notification to "Starting…" — that made a
+        // service which had been tracking for hours look like it had only just
+        // begun. Keep the existing notification when already running.
+        if (running) {
+            if (intervalMs != previousInterval) {
+                Log.d(TAG, "interval changed " + previousInterval + " -> " + intervalMs + "; re-arming");
+                // requestUpdates() returns early when a callback is already
+                // registered, so without this the new cadence was accepted into
+                // the field and then never actually applied to the provider.
+                reArmUpdates();
+            }
+            updateNotification();
+            return START_STICKY;
+        }
 
         startForeground(NOTIFICATION_ID, buildNotification("Starting…"));
 

@@ -86,6 +86,29 @@ export async function startTracker(opts: {
   return startWeb({ deviceId, intervalMs });
 }
 
+/**
+ * Whether the native foreground service is genuinely running.
+ *
+ * `active` in React state only says the employee is checked in — it is not
+ * evidence that anything is capturing. If the OS killed the process while the
+ * app was away, the two disagree, and the employee sees a checked-in screen with
+ * no tracking behind it. Returns false on web and whenever the plugin is
+ * unavailable, so callers can treat it as "cannot confirm".
+ */
+export async function isNativeServiceRunning(): Promise<boolean> {
+  if (!isNative()) return false;
+  try {
+    const { registerPlugin } = await import('@capacitor/core');
+    const LocationTracking = registerPlugin<{
+      status(): Promise<{ running: boolean; queued: number }>;
+    }>('LocationTracking');
+    const res = await LocationTracking.status();
+    return !!res?.running;
+  } catch {
+    return false;
+  }
+}
+
 export async function stopTracker() {
   if (isNative()) {
     if (nativeWatcherId) {
