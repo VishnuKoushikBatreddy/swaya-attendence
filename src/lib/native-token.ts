@@ -64,3 +64,23 @@ export function verifyNativeToken(token: string | null | undefined): NativeToken
     return null;
   }
 }
+
+/**
+ * Whether a token is close enough to expiry that it should be replaced.
+ *
+ * The native service has no session and cannot re-mint on its own, and the only
+ * thing that used to refresh the token was opening the app. An employee who did
+ * not open it for a month hit a 401, which the uploader treats as permanent and
+ * drops the batch — pings lost, with nothing on screen to say why.
+ *
+ * Since the device talks to the server every few minutes anyway, a token past
+ * this point is simply swapped on the next upload. The window is generous
+ * because it only has to be longer than the longest plausible offline stretch.
+ */
+export function shouldRefreshNativeToken(
+  payload: NativeTokenPayload,
+  nowMs: number = Date.now(),
+  refreshWithinMs: number = 7 * 24 * 60 * 60 * 1000
+): boolean {
+  return payload.exp - nowMs < refreshWithinMs;
+}

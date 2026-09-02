@@ -62,17 +62,25 @@ final class PingUploader {
         String baseUrl = prefs.getString("geofence_url", null);
         String token = prefs.getString("geofence_token", null);
         if (baseUrl == null || token == null) {
-            // Signed out: these pings can never be attributed to anyone.
-            Log.w(TAG, "no token/url — discarding " + PingQueue.size(ctx) + " ping(s)");
-            PingQueue.clear(ctx);
-            return true;
+            // HOLD, do not discard. This used to call PingQueue.clear(), which
+            // threw away work the employee had genuinely done. The usual reason
+            // the token is missing is not "signed out for good" — it is the
+            // minutes right after an app update or reinstall, before the WebView
+            // has re-registered it. Deleting the buffer in that window silently
+            // lost a chunk of the shift.
+            //
+            // Keeping them is safe: PingQueue is bounded to MAX_ITEMS and purges
+            // anything older than MAX_AGE_MS, so a genuinely abandoned queue
+            // still drains itself rather than growing without limit.
+            Log.w(TAG, "no token/url — holding " + PingQueue.size(ctx) + " ping(s) until it returns");
+            return false;
         }
 
         while (PingQueue.size(ctx) > 0) {
             JSONArray batch = PingQueue.peek(ctx, BATCH_SIZE);
             if (batch.length() == 0) break;
 
-            int status = post(baseUrl, token, batch);
+            int status = post(prefs, baseUrl, token, batch);
             if (status >= 200 && status < 300) {
                 PingQueue.removeFirst(ctx, batch.length());
             } else if (status >= 400 && status < 500) {
@@ -87,7 +95,8 @@ final class PingUploader {
     }
 
     /** @return HTTP status, or 0 when the request could not be made (retryable). */
-    private static int post(String baseUrl, String token, JSONArray pings) {
+    private static int post(
+            SharedPreferences prefs, String baseUrl, String token, JSONArray pings) {
         HttpURLConnection conn = null;
         try {
             JSONObject body = new JSONObject();
@@ -120,8 +129,32 @@ final class PingUploader {
                 // the service can stop tracking instead of pinging a closed
                 // session for the rest of the day.
                 String resp = readBody(conn);
-                if (resp != null && resp.contains("\"autoCheckedOut\":true")) {
-                    lastBatchAutoCheckedOut = true;
+                if (resp != null) {
+                    try {
+                        JSONObject data = new JSONObject(resp).optJSONObject("data");
+                        if (data != null) {
+                            lastBatchAutoCheckedOut = data.optBoolean("autoCheckedOut", false);
+
+                            // The native token is long-lived but not immortal.
+                            // Once it expired the server answered 401, which the
+                            // 4xx branch treats as permanent and DROPS the batch
+                            // — so an employee who had not opened the app in a
+                            // month lost pings with nothing to indicate why.
+                            // The service already talks to the server every few
+                            // minutes, so the server hands back a fresh token as
+                            // expiry approaches and it is simply stored here. No
+                            // app launch required.
+                            String refreshed = data.optString("refreshedToken", null);
+                            if (refreshed != null && !refreshed.isEmpty()) {
+                                prefs.edit().putString("geofence_token", refreshed).apply();
+                                Log.d(TAG, "native token refreshed by the server");
+                            }
+                        }
+                    } catch (Exception parseErr) {
+                        // Fall back to the old string probe rather than losing
+                        // the auto-checkout signal on an unexpected body.
+                        lastBatchAutoCheckedOut = resp.contains("\"autoCheckedOut\":true");
+                    }
                 }
             }
             Log.d(TAG, "uploaded " + pings.length() + " ping(s) -> HTTP " + code);

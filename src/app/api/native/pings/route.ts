@@ -16,7 +16,11 @@ import { NextRequest } from "next/server";
 import { Types } from "mongoose";
 import { parseJson, ok, fail, withApi } from "@/lib/api-helpers";
 import { NativePingBatchSchema } from "@/lib/validators";
-import { verifyNativeToken } from "@/lib/native-token";
+import {
+  verifyNativeToken,
+  mintNativeToken,
+  shouldRefreshNativeToken,
+} from "@/lib/native-token";
 import { processPings } from "@/lib/attendance-service";
 import { evaluateEventFreshness } from "@/lib/attendance-logic";
 import { env } from "@/lib/env";
@@ -87,10 +91,22 @@ export const POST = withApi(async (req: NextRequest) => {
     `[native-pings] employee=${payload.employeeId} received=${result.received} dropped=${dropped} appState=${states.join(",")} autoCheckedOut=${result.autoCheckedOut ?? false}`
   );
 
+  // Hand back a fresh token as expiry approaches. The device stores it and uses
+  // it from the next upload, so a long-lived install never silently falls off a
+  // cliff into 401s that the uploader would treat as permanent.
+  const refreshedToken = shouldRefreshNativeToken(payload)
+    ? mintNativeToken(payload.employeeId, payload.companyId)
+    : undefined;
+  if (refreshedToken) {
+    // eslint-disable-next-line no-console
+    console.log(`[native-pings] issued a refreshed token for ${payload.employeeId}`);
+  }
+
   return ok({
     received: result.received,
     dropped,
     autoCheckedOut: result.autoCheckedOut ?? false,
     autoCheckoutAt: result.autoCheckoutAt ?? null,
+    ...(refreshedToken ? { refreshedToken } : {}),
   });
 });
