@@ -33,8 +33,14 @@ export default function AdminReportsPage() {
     const j = await r.json();
     if (j.ok) setRows(j.data.rows || []);
   }
+  // Mount only: this fetches the default last-7-days report. The filters are
+  // applied deliberately, by the Apply button — NOT reactively. Adding `load` to
+  // the dependency array (what exhaustive-deps suggests) would re-run this on
+  // every render, since `load` is redeclared each time, and each run calls
+  // setRows — an endless fetch loop against /api/reports/attendance.
   useEffect(() => {
     load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function downloadCsv() {
