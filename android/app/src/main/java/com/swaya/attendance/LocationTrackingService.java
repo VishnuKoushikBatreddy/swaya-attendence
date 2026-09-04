@@ -209,6 +209,11 @@ public class LocationTrackingService extends Service {
             // in the notification shade pretending to track.
             Log.w(TAG, "location permission missing — stopping");
             stopTracking();
+            // AFTER stopTracking, which withdraws alerts: the employee has to be
+            // told why tracking just ended, and this is the only chance to say
+            // so — the heartbeat that normally raises alerts is now stopped.
+            // Immediate, with no grace period; a revoked permission is not a flap.
+            TrackingAlerts.alertNow(this, TrackingAlerts.PROBLEM_PERMISSION);
             return START_NOT_STICKY;
         }
 
@@ -322,11 +327,15 @@ public class LocationTrackingService extends Service {
             // the queue keeps the pings and the next tick retries them.
             try {
                 boolean drained = PingUploader.flush(getApplicationContext());
+                // An automatic check-out does NOT end capture. Pings are how a
+                // return to the site is noticed — they arrive on a fixed cadence,
+                // whereas the OS geofence only fires on a crossing it can miss —
+                // so stopping here would remove the very signal that puts the
+                // employee back on the clock. Capture runs to the shift deadline,
+                // which the watchdog enforces; only a deliberate check-out (an
+                // explicit ACTION_STOP from the app) ends it early.
                 if (PingUploader.lastBatchAutoCheckedOut) {
-                    // The server closed the session — keep tracking pointless.
-                    Log.d(TAG, "server auto-checked-out; stopping tracking");
-                    mainHandler.post(this::stopTracking);
-                    return;
+                    Log.d(TAG, "server auto-checked-out; continuing to watch for a return");
                 }
                 if (!drained) Log.d(TAG, "flush incomplete; will retry");
             } catch (Throwable t) {
@@ -369,6 +378,12 @@ public class LocationTrackingService extends Service {
             public void run() {
                 try {
                     keepNotificationVisible();
+                    // Piggy-backs on this heartbeat rather than running a timer
+                    // of its own: both are cheap "is anything visibly wrong"
+                    // checks and 30s is the right resolution for both. The alert
+                    // has its own grace period, so a brief flap says nothing.
+                    TrackingAlerts.evaluate(
+                            LocationTrackingService.this, hasLocationPermission());
                 } catch (Throwable t) {
                     Log.e(TAG, "notification keepalive failed", t);
                 } finally {
@@ -493,6 +508,10 @@ public class LocationTrackingService extends Service {
         running = false;
         stopNotificationKeepalive();
         stopWatchdog();
+        // Nothing is being recorded any more, so "turn your location on" is no
+        // longer an instruction that would achieve anything. Leaving it up would
+        // make the shift look broken after it had simply ended.
+        TrackingAlerts.clear(this);
         if (callback != null) {
             try { client.removeLocationUpdates(callback); } catch (Exception ignore) {}
             callback = null;

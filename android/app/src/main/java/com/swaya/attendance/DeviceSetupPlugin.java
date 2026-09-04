@@ -82,7 +82,42 @@ public class DeviceSetupPlugin extends Plugin {
         res.put("batteryUnrestricted", isIgnoringBatteryOptimizations());
         res.put("autostartScreenAvailable", resolveAutostartIntent() != null);
         res.put("trackingServiceRunning", LocationTrackingService.running);
+        // The device's master location toggle and its network state, both read
+        // from the OS. The WebView cannot see either: navigator.onLine only
+        // reports whether the browser has a connection object, and there is no
+        // web API at all for "location services are switched off" — a denied
+        // geolocation call looks the same as an indoor timeout.
+        res.put("locationServicesEnabled", TrackingAlerts.isLocationEnabled(getContext()));
+        res.put("internetAvailable", TrackingAlerts.hasInternet(getContext()));
         call.resolve(res);
+    }
+
+    /** The device's location settings screen — where the master toggle lives. */
+    @PluginMethod
+    public void openLocationSettings(PluginCall call) {
+        try {
+            Intent i = new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS);
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(i);
+            call.resolve(new JSObject().put("opened", true));
+        } catch (Exception e) {
+            Log.w(TAG, "location settings refused to open", e);
+            openAppDetails(call);
+        }
+    }
+
+    /** Wi-Fi / mobile data settings. */
+    @PluginMethod
+    public void openNetworkSettings(PluginCall call) {
+        try {
+            Intent i = new Intent(Settings.ACTION_WIRELESS_SETTINGS);
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(i);
+            call.resolve(new JSObject().put("opened", true));
+        } catch (Exception e) {
+            Log.w(TAG, "network settings refused to open", e);
+            openAppDetails(call);
+        }
     }
 
     /**

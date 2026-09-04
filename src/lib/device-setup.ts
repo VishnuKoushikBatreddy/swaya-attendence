@@ -31,6 +31,14 @@ export type DeviceSetupStatus = {
   autostartScreenAvailable: boolean;
   /** Whether the tracking service is actually running right now. */
   trackingServiceRunning: boolean;
+  /**
+   * The device's MASTER location toggle, read from LocationManager. Distinct
+   * from this app's permission, and invisible to the WebView — a browser cannot
+   * tell "location services are off" from "no fix indoors".
+   */
+  locationServicesEnabled: boolean;
+  /** Whether the OS reports a network the app could upload over. */
+  internetAvailable: boolean;
 };
 
 const UNSUPPORTED: DeviceSetupStatus = {
@@ -40,6 +48,10 @@ const UNSUPPORTED: DeviceSetupStatus = {
   batteryUnrestricted: true,
   autostartScreenAvailable: false,
   trackingServiceRunning: false,
+  // Assume healthy when unreadable, so an older APK without the plugin does not
+  // start warning about settings it cannot actually check.
+  locationServicesEnabled: true,
+  internetAvailable: true,
 };
 
 type DeviceSetupPlugin = {
@@ -47,6 +59,8 @@ type DeviceSetupPlugin = {
   requestBatteryExemption(): Promise<{ opened: boolean; alreadyGranted?: boolean }>;
   openAutostartSettings(): Promise<{ opened: boolean; vendorScreen?: boolean }>;
   openAppSettings(): Promise<{ opened: boolean }>;
+  openLocationSettings(): Promise<{ opened: boolean }>;
+  openNetworkSettings(): Promise<{ opened: boolean }>;
 };
 
 async function plugin(): Promise<DeviceSetupPlugin | null> {
@@ -101,6 +115,30 @@ export async function openAppSettings(): Promise<boolean> {
   if (!p) return false;
   try {
     const r = await p.openAppSettings();
+    return !!r?.opened;
+  } catch {
+    return false;
+  }
+}
+
+/** The device's location settings, where the master toggle lives. */
+export async function openLocationSettings(): Promise<boolean> {
+  const p = await plugin();
+  if (!p) return false;
+  try {
+    const r = await p.openLocationSettings();
+    return !!r?.opened;
+  } catch {
+    return false;
+  }
+}
+
+/** Wi-Fi / mobile data settings. */
+export async function openNetworkSettings(): Promise<boolean> {
+  const p = await plugin();
+  if (!p) return false;
+  try {
+    const r = await p.openNetworkSettings();
     return !!r?.opened;
   } catch {
     return false;
