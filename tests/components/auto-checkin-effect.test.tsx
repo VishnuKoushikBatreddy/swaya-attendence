@@ -40,7 +40,7 @@ vi.mock("@/lib/offline-queue", () => ({
     h.enqueued.push(a);
     return a;
   }),
-  replayQueue: vi.fn(async () => 0),
+  replayQueue: vi.fn(async () => ({ synced: 0, rejected: [] })),
 }));
 vi.mock("@/components/ui/toaster", () => ({ toast: vi.fn() }));
 vi.mock("@/components/geo/LocationTracker", () => ({
@@ -60,7 +60,17 @@ const todayPayload = (over: Partial<any> = {}) => ({
   ok: true,
   data: {
     day: { status: "pending", totalWorkSeconds: 0 },
-    sessions: [],
+    // Auto check-in RESUMES a day already started by hand — it never begins one.
+    // These cases are about what happens after an AUTOMATIC check-out, so the
+    // day already has a closed session.
+    sessions: [
+      {
+        _id: "prior",
+        checkInAt: new Date(NOW - 120 * 60_000).toISOString(),
+        checkOutAt: new Date(NOW - 60 * 60_000).toISOString(),
+        status: "auto_closed",
+      },
+    ],
     site: {
       name: "Main Office",
       location: { type: "Point", coordinates: [SITE.lng, SITE.lat] },

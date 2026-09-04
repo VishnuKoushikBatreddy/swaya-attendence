@@ -84,7 +84,12 @@ export const env = {
   AUTO_CHECKOUT_CONSECUTIVE_PINGS: num("AUTO_CHECKOUT_CONSECUTIVE_PINGS", 3),
   // Suppress auto check-out during the afternoon lunch window (company timezone),
   // so leaving the site radius for lunch doesn't end the shift. Times are HH:mm.
-  AUTO_CHECKOUT_LUNCH_BREAK_ENABLED: bool("AUTO_CHECKOUT_LUNCH_BREAK_ENABLED", true),
+  //
+  // OFF by default: the agreed rule is simply "leaving the site checks you out",
+  // and an exception that silently keeps someone on the clock while they are
+  // away contradicts it — the employee is paid for time the geofence says they
+  // were not there. Turn it on only if that trade is wanted deliberately.
+  AUTO_CHECKOUT_LUNCH_BREAK_ENABLED: bool("AUTO_CHECKOUT_LUNCH_BREAK_ENABLED", false),
   AUTO_CHECKOUT_LUNCH_START: process.env.AUTO_CHECKOUT_LUNCH_START || "13:00",
   AUTO_CHECKOUT_LUNCH_END: process.env.AUTO_CHECKOUT_LUNCH_END || "14:00",
   // Gap-based auto check-out: if tracking goes silent for longer than this many
@@ -140,6 +145,17 @@ export const env = {
   GEOFENCE_MAX_EVENT_AGE_MINUTES: num("GEOFENCE_MAX_EVENT_AGE_MINUTES", 720),
   // Tolerance for a device clock running ahead of the server.
   GEOFENCE_MAX_CLOCK_SKEW_MINUTES: num("GEOFENCE_MAX_CLOCK_SKEW_MINUTES", 5),
+  // Extra distance allowed on a check-in the OS geofence triggered. The OS ring
+  // is coarser than the site radius (never below ~100m, see geofence.ts), so a
+  // legitimate crossing can report from outside the precise fence. Bounded
+  // rather than waived: an unbounded bypass let a bad fix open a session from
+  // any distance, and the next ping immediately read "outside".
+  GEOFENCE_CHECKIN_ALLOWANCE_METERS: num("GEOFENCE_CHECKIN_ALLOWANCE_METERS", 150),
+  // Hard ceiling on how long one session may stay open. A backstop for the case
+  // where the roster provides no end time — a schedule with no expectedEndAt
+  // used to leave a session with no deadline whatsoever, and one ran for
+  // 11h41m. Longer than any real shift, so it never truncates genuine work.
+  MAX_SESSION_HOURS: num("MAX_SESSION_HOURS", 16),
   // Shared secret Vercel Cron sends as a Bearer token to the close-shifts job.
   CRON_SECRET: process.env.CRON_SECRET || "",
   SMTP_HOST: process.env.SMTP_HOST || "",

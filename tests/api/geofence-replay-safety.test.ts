@@ -229,14 +229,14 @@ describe("processGeofenceEnter — replay safety", () => {
     expect(res.alreadyActive).toBe(true);
   });
 
-  it("still processes an ENTER when nothing supersedes it", async () => {
-    // No prior sessions at all — the genuine offline-reconstruction case. It
-    // proceeds into processCheckIn (which fails on assignment lookup here, and
-    // that is fine: the point is that the replay guard did not block it).
+  it("refuses to START the day — the first check-in must be by hand", async () => {
+    // No sessions today, so there is no day under way to resume. The OS
+    // geofence fires on arrival (and on every registration while inside), so
+    // without this it opened the day's first session simply because the
+    // employee walked past their site.
     state.sessions = [];
     const res: any = await enter(T09.toISOString());
+    expect(res.needsManualStart).toBe(true);
     expect(res.superseded).toBeUndefined();
-    expect(res.ok).toBe(false);
-    expect(res.reason).toBe("no_assignment");
   });
 });

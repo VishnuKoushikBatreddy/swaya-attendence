@@ -9,10 +9,15 @@ import { Label } from "@/components/ui/label";
 import { Badge, badgeVariants } from "@/components/ui/badge";
 import { toast } from "@/components/ui/toaster";
 import { formatDuration, formatTime, formatTimeWithSeconds } from "@/lib/utils";
-import { evaluateAutoCheckIn, isWithinTrackingWindow } from "@/lib/attendance-logic";
+import {
+  evaluateAutoCheckIn,
+  isWithinTrackingWindow,
+  shouldTrackNow,
+} from "@/lib/attendance-logic";
 import dynamic from "next/dynamic";
 import { LocationTracker } from "@/components/geo/LocationTracker";
 import { TrackingHealthCard } from "@/components/geo/TrackingHealthCard";
+import { ConnectivityAlert } from "@/components/geo/ConnectivityAlert";
 import { getDeviceId } from "@/lib/device";
 import { readBatteryPercent, readNetworkType, subscribeNetwork } from "@/lib/device-status";
 import { getCurrentLocation } from "@/lib/geolocation";
@@ -162,11 +167,29 @@ export default function EmployeePage() {
     let cancelled = false;
     const sync = async () => {
       if (getQueue().length === 0) return;
-      const n = await replayQueue();
+      const { synced, rejected } = await replayQueue();
       if (cancelled) return;
       setPending(getQueue());
-      if (n > 0) {
-        toast({ title: `Synced ${n} offline action${n > 1 ? "s" : ""}` });
+      if (synced > 0) {
+        toast({ title: `Synced ${synced} offline action${synced > 1 ? "s" : ""}` });
+      }
+      // A refusal has to be said out loud. The phone only checks the geofence
+      // before queueing — not the roster or the shift window — so an offline
+      // check-in on an unscheduled day queues happily and is then refused on
+      // sync. Dropping it silently left the employee believing they were on the
+      // clock until someone reviewed the day.
+      for (const r of rejected) {
+        toast({
+          title:
+            r.type === "check-in"
+              ? "Your offline check-in wasn't saved"
+              : "Your offline check-out wasn't saved",
+          description: `${formatTimeWithSeconds(r.capturedAt)} — ${r.reason}`,
+          variant: "destructive",
+          duration: 10_000,
+        });
+      }
+      if (synced > 0 || rejected.length > 0) {
         loadToday();
       }
     };
@@ -322,6 +345,9 @@ export default function EmployeePage() {
   const isCheckedIn = lastPendingType ? lastPendingType === "check-in" : serverCheckedIn;
   // A scheduled non-working day (weekly off / company holiday) — no check-in needed.
   const isDayOff = today?.schedule != null && today.schedule.isWorkingDay === false;
+  // Rostered to work today. NOT the negation of isDayOff: having no schedule at
+  // all is a third state, and on that day nothing can be checked in anyway.
+  const isWorkingDay = today?.schedule?.isWorkingDay === true;
   // A scheduled non-working day is now the only reason check-in is not required.
   const noCheckInNeeded = isDayOff;
 
@@ -407,6 +433,8 @@ export default function EmployeePage() {
     scheduleEndMs,
     graceMinutes,
     lastSessionStatus: lastSession?.status ?? null,
+    // Auto check-in RESUMES a day already started by hand; it never starts one.
+    hasSessionToday: (today?.sessions?.length ?? 0) > 0,
     nowMs: nowTs || Date.now(),
   });
 
@@ -420,12 +448,25 @@ export default function EmployeePage() {
     graceMinutes,
     nowMs: nowTs || Date.now(),
   });
-  const trackingActive = isCheckedIn && withinTrackingWindow;
+  // Tracking is NOT tied to being checked in. After an automatic check-out the
+  // pings are what notice the employee returning and drive the automatic
+  // check-in, so capture continues for the whole scheduled window. Only a
+  // deliberate check-out, or the end of the window, stops it.
+  const trackingActive = shouldTrackNow({
+    hasSessionToday: (today?.sessions?.length ?? 0) > 0,
+    lastSessionStatus: lastSession?.status ?? null,
+    withinTrackingWindow,
+  });
   const autoCheckInEligible = autoCheckInDecision.ok;
   const autoPollMs = today?.autoCheckIn?.pollMs ?? 60_000;
 
   // Throttles attempts across effect restarts (the `today` poll re-renders often).
   const lastAutoAttemptRef = useRef(0);
+  // Consecutive auto check-in rejections, and whether we have mentioned it.
+  // Silence is right for ONE rejection (the throttle retries shortly) but wrong
+  // for a persistent one: the employee believes they are being checked in
+  // automatically and finds out otherwise from a payroll query days later.
+  const autoFailRef = useRef({ streak: 0, told: false });
   useEffect(() => {
     if (!autoCheckInEligible || siteLat == null || siteLng == null) return;
     let cancelled = false;
@@ -476,8 +517,26 @@ export default function EmployeePage() {
           setTracking(true);
           loadToday();
         }
-        // A rejection (already checked in, outside hours, day off) needs no
-        // toast — this runs unattended, and the throttle prevents a retry storm.
+        if (json.ok) {
+          autoFailRef.current = { streak: 0, told: false };
+        } else {
+          // "Already checked in" is not a failure — it is the steady state once
+          // the session is open, and counting it would nag every shift.
+          const benign = String(json.error || "").toLowerCase().includes("already");
+          if (!benign) {
+            autoFailRef.current.streak += 1;
+            // Three in a row is roughly three minutes of trying: long past a
+            // transient GPS wobble, and worth one message. Only ever one.
+            if (autoFailRef.current.streak >= 3 && !autoFailRef.current.told) {
+              autoFailRef.current.told = true;
+              toast({
+                title: "Automatic check-in isn't working",
+                description: `${json.error || "Your check-in was refused."} You'll need to check in manually.`,
+                variant: "destructive",
+              });
+            }
+          }
+        }
       } catch {
         // Offline: do NOT queue. A queued auto check-in would replay at a time
         // the employee never chose. Manual check-in still queues.
@@ -536,6 +595,13 @@ export default function EmployeePage() {
           silently stop tracking. It is the only failure the employee cannot
           otherwise see. */}
       <TrackingHealthCard />
+
+      {/* Location or internet switched off. Scoped to a working day inside the
+          shift window: outside it neither setting affects anything, and warning
+          someone at midnight about their Wi-Fi is how notifications get muted.
+          The Android service raises the same warning as a system notification
+          when the app is closed. */}
+      <ConnectivityAlert enabled={isWorkingDay && withinTrackingWindow} />
 
       <LocationTracker
         active={trackingActive}

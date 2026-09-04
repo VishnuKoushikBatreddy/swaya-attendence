@@ -64,7 +64,7 @@ vi.mock("@/lib/device-status", () => ({
 vi.mock("@/lib/offline-queue", () => ({
   getQueue: () => [],
   enqueueAction: vi.fn(),
-  replayQueue: vi.fn(async () => 0),
+  replayQueue: vi.fn(async () => ({ synced: 0, rejected: [] })),
 }));
 vi.mock("@/components/ui/toaster", () => ({ toast: vi.fn() }));
 vi.mock("@/components/geo/LocationTracker", () => ({ LocationTracker: () => null }));

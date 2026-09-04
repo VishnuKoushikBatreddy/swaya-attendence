@@ -60,7 +60,7 @@ describe("replayQueue", () => {
     const fetchMock = vi.fn().mockResolvedValue(resp(200, { ok: true }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const synced = await replayQueue();
+    const { synced } = await replayQueue();
 
     expect(synced).toBe(1);
     expect(getQueue()).toHaveLength(0);
@@ -77,7 +77,7 @@ describe("replayQueue", () => {
       vi.fn().mockResolvedValue(resp(400, { ok: false, error: "already_checked_in" }))
     );
 
-    const synced = await replayQueue();
+    const { synced } = await replayQueue();
 
     expect(synced).toBe(0);
     expect(getQueue()).toHaveLength(0); // dropped, won't retry forever
@@ -87,7 +87,7 @@ describe("replayQueue", () => {
     enqueueAction(sample());
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(resp(500, { ok: false })));
 
-    const synced = await replayQueue();
+    const { synced } = await replayQueue();
 
     expect(synced).toBe(0);
     expect(getQueue()).toHaveLength(1); // still queued
@@ -98,7 +98,7 @@ describe("replayQueue", () => {
     enqueueAction(sample({ capturedAt: "2026-06-13T09:00:00.000Z" }));
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("Failed to fetch")));
 
-    const synced = await replayQueue();
+    const { synced } = await replayQueue();
 
     expect(synced).toBe(0);
     expect(getQueue()).toHaveLength(2);
@@ -112,5 +112,60 @@ describe("replayQueue", () => {
     await replayQueue();
 
     expect(fetchMock.mock.calls[0][0]).toBe("/api/attendance/check-out");
+  });
+
+  it("reports WHY a queued action was refused, instead of dropping it silently", async () => {
+    // The phone only checks the geofence before queueing — not the roster or the
+    // shift window — so an offline check-in on an unscheduled day queues happily
+    // and is then refused on sync. Dropping that quietly left the employee
+    // believing they were on the clock until an admin noticed days later.
+    enqueueAction({
+      type: "check-in",
+      lat: 1,
+      lng: 2,
+      capturedAt: "2026-09-05T04:00:00.000Z",
+      deviceId: "d1",
+    });
+    global.fetch = vi.fn(async () => ({
+      ok: false,
+      status: 400,
+      json: async () => ({ ok: false, error: "You have no shift scheduled for today." }),
+    })) as any;
+
+    const { synced, rejected } = await replayQueue();
+
+    expect(synced).toBe(0);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0].type).toBe("check-in");
+    expect(rejected[0].reason).toBe("You have no shift scheduled for today.");
+    // Still dropped — retrying cannot change the answer.
+    expect(getQueue()).toHaveLength(0);
+  });
+
+  it("reports nothing when everything synced", async () => {
+    enqueueAction({ type: "check-in", lat: 1, lng: 2, capturedAt: "2026-09-05T04:00:00.000Z", deviceId: "d1" });
+    global.fetch = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) })) as any;
+
+    const { synced, rejected } = await replayQueue();
+    expect(synced).toBe(1);
+    expect(rejected).toHaveLength(0);
+  });
+
+  it("does not report a 5xx as a refusal — it is retried, not lost", async () => {
+    enqueueAction({ type: "check-out", lat: 1, lng: 2, capturedAt: "2026-09-05T04:00:00.000Z", deviceId: "d1" });
+    global.fetch = vi.fn(async () => ({ ok: false, status: 503, json: async () => ({ ok: false, error: "down" }) })) as any;
+
+    const { synced, rejected } = await replayQueue();
+    expect(synced).toBe(0);
+    expect(rejected).toHaveLength(0);
+    expect(getQueue()).toHaveLength(1); // still queued
+  });
+
+  it("falls back to a readable reason when the server gives none", async () => {
+    enqueueAction({ type: "check-in", lat: 1, lng: 2, capturedAt: "2026-09-05T04:00:00.000Z", deviceId: "d1" });
+    global.fetch = vi.fn(async () => ({ ok: false, status: 400, json: async () => null })) as any;
+
+    const { rejected } = await replayQueue();
+    expect(rejected[0].reason).toBeTruthy();
   });
 });

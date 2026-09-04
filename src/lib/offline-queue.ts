@@ -55,10 +55,32 @@ function removeAction(id: string) {
   write(read().filter((i) => i.id !== id));
 }
 
-/** Replay queued actions oldest-first. Returns how many synced successfully. */
-export async function replayQueue(): Promise<number> {
+/** A queued action the server refused, with the reason it gave. */
+export type RejectedAction = {
+  type: QueuedAction["type"];
+  capturedAt: string;
+  reason: string;
+};
+
+export type ReplayResult = {
+  synced: number;
+  /**
+   * Actions the server refused. These are dropped from the queue — retrying
+   * cannot change the answer — but the employee has to be TOLD.
+   *
+   * The phone only checks the geofence before queueing, not the roster or the
+   * shift window, so an offline check-in on an unscheduled day queues happily
+   * and is then refused on sync. Dropping that silently left someone believing
+   * they were checked in until an admin noticed days later.
+   */
+  rejected: RejectedAction[];
+};
+
+/** Replay queued actions oldest-first. */
+export async function replayQueue(): Promise<ReplayResult> {
   const items = getQueue();
   let synced = 0;
+  const rejected: RejectedAction[] = [];
   for (const item of items) {
     const url = item.type === "check-in" ? "/api/attendance/check-in" : "/api/attendance/check-out";
     const body =
@@ -83,8 +105,14 @@ export async function replayQueue(): Promise<number> {
         removeAction(item.id);
         synced++;
       } else if (res.status >= 400 && res.status < 500) {
-        // Server rejected it (outside geofence / no active session / etc.) — drop
-        // it so it doesn't retry forever.
+        // Server rejected it (outside geofence / no shift scheduled / out of
+        // hours). Retrying cannot change that, so it is dropped — but the reason
+        // is carried back so the employee finds out now rather than never.
+        rejected.push({
+          type: item.type,
+          capturedAt: item.capturedAt,
+          reason: json?.error || "It was refused by the server.",
+        });
         removeAction(item.id);
       }
       // 5xx: leave it queued and try again next time.
@@ -93,5 +121,5 @@ export async function replayQueue(): Promise<number> {
       break;
     }
   }
-  return synced;
+  return { synced, rejected };
 }

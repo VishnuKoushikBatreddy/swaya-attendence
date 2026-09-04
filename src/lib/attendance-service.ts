@@ -34,6 +34,8 @@ import {
   resolveDayStatus,
   resolveAutoCheckout,
   shouldGapCheckout,
+  resolveSessionDeadline,
+  shouldPingAutoCheckIn,
   deriveCheckoutSource,
 } from "./attendance-logic";
 import {
@@ -194,12 +196,16 @@ export async function processCheckIn(input: CheckInInput): Promise<CheckInResult
   if (!found) {
     return { ok: false, reason: "no_assignment" };
   }
-  // A native-geofence-triggered check-in is validated by the OS's wider ~100m
-  // ring, so skip the precise 20m rejection (the app-open path still enforces it).
-  if (
-    !input.geofenceTriggered &&
-    found.distance > found.site.radiusMeters + (input.accuracyMeters ?? 0)
-  ) {
+  // A native-geofence-triggered check-in is validated by the OS's wider ring, so
+  // the precise radius is relaxed — but NOT removed. It used to be skipped
+  // entirely, which let a coarse OS fix check someone in from an arbitrary
+  // distance; the very next ping then read "outside" and started feeding the
+  // sustained-absence rule, so the session churned. The allowance is bounded to
+  // the ring the OS actually watches.
+  const allowance =
+    (input.accuracyMeters ?? 0) +
+    (input.geofenceTriggered ? env.GEOFENCE_CHECKIN_ALLOWANCE_METERS : 0);
+  if (found.distance > found.site.radiusMeters + allowance) {
     return {
       ok: false,
       reason: "outside_geofence",
@@ -219,7 +225,11 @@ export async function processCheckIn(input: CheckInInput): Promise<CheckInResult
       { lat: lastPing.location.coordinates[1], lng: lastPing.location.coordinates[0] },
       { lat: input.lat, lng: input.lng }
     );
-    const dtSec = (Date.now() - new Date(lastPing.capturedAt).getTime()) / 1000;
+    // Measured from the check-in's OWN time, not "now". An offline check-in
+    // replayed hours later was compared against the delay in syncing rather than
+    // the time actually elapsed, so the implied speed collapsed to near zero and
+    // detection never fired on exactly the path that most needs it.
+    const dtSec = (at.getTime() - new Date(lastPing.capturedAt).getTime()) / 1000;
     if (dtSec > 1) {
       const speed = (dist / dtSec) * 3.6;
       if (speed > env.MOCK_LOCATION_SPEED_KMH) {
@@ -409,7 +419,14 @@ export async function processCheckOut(opts: {
   // Effective check-out time: captured time for an offline check-out, else now.
   const at = opts.capturedAt ? new Date(opts.capturedAt) : new Date();
 
-  // Enforce scheduled shift hours (when the employee has a schedule for the day).
+  // Check-out is gated exactly like check-in: a day with no schedule is not a
+  // working day, and manual actions only happen inside the rostered window.
+  //
+  // The obvious worry is trapping someone who stays late — but they cannot,
+  // because the shift-end auto check-out closes the session AT the scheduled end
+  // (and resolveSessionDeadline guarantees a deadline even when the roster has
+  // no end time). By the time the window has closed there is nothing left open
+  // to close manually.
   const gate = await scheduleGate(
     opts.employeeId,
     getWorkDateInTimezone(at, opts.timezone),
@@ -473,12 +490,45 @@ export async function processGeofenceExit(opts: {
     checkInAt: { $lte: at },
   }).sort({ checkInAt: -1 });
   if (!session) return { ok: false as const, reason: "no_active_session" };
+
+  // The lunch rule applies HERE TOO. Sustained-absence auto-checkout is
+  // suppressed during the lunch window so that stepping out to eat does not end
+  // the shift — but this path ignored it, so the same walk closed the session
+  // via the OS geofence instead. One employee, one action, two different
+  // outcomes depending on which subsystem noticed first.
+  const timezone = await getCompanyTimezone(opts.companyId);
+  const lunchEndMs = zonedDateTimeToUtc(
+    getWorkDateInTimezone(at, timezone),
+    env.AUTO_CHECKOUT_LUNCH_END,
+    timezone
+  ).getTime();
+  const decision = resolveAutoCheckout({
+    leftAtMs: at.getTime(),
+    lunchEnabled: env.AUTO_CHECKOUT_LUNCH_BREAK_ENABLED,
+    currentInLunch: isWithinLocalTimeWindow(
+      at,
+      timezone,
+      env.AUTO_CHECKOUT_LUNCH_START,
+      env.AUTO_CHECKOUT_LUNCH_END
+    ),
+    leftInLunch: isWithinLocalTimeWindow(
+      at,
+      timezone,
+      env.AUTO_CHECKOUT_LUNCH_START,
+      env.AUTO_CHECKOUT_LUNCH_END
+    ),
+    lunchEndMs,
+  });
+  if (decision.suppress) {
+    return { ok: true as const, suppressedForLunch: true };
+  }
+
   const { day } = await finalizeSession({
     session,
     lat: opts.lat,
     lng: opts.lng,
     accuracyMeters: opts.accuracyMeters,
-    checkOutAt: at,
+    checkOutAt: new Date(decision.checkOutAtMs),
     status: "auto_closed",
     reason: "auto_checkout_geofence_exit",
   });
@@ -549,14 +599,25 @@ export async function processGeofenceEnter(opts: {
   })
     .select("_id")
     .lean();
-  if (today) {
-    const lastToday = await AttendanceSession.findOne({ attendanceDayId: today._id })
-      .sort({ checkInAt: -1 })
-      .select("status")
-      .lean();
-    if (lastToday?.status === "completed") {
-      return { ok: true as const, manualCheckout: true };
-    }
+  // The day must already have been started BY HAND. The OS geofence fires on
+  // arrival — and, because it is registered with INITIAL_TRIGGER_ENTER, on every
+  // registration while inside — so without this it opened the day's first
+  // session simply because the employee walked past. Production shows exactly
+  // that: a day whose first check-in came from geofence_enter, which then ran
+  // for 11h41m. Auto check-in resumes a day already under way; it never begins
+  // one.
+  if (!today) {
+    return { ok: true as const, needsManualStart: true };
+  }
+  const lastToday = await AttendanceSession.findOne({ attendanceDayId: today._id })
+    .sort({ checkInAt: -1 })
+    .select("status")
+    .lean();
+  if (!lastToday) {
+    return { ok: true as const, needsManualStart: true };
+  }
+  if (lastToday.status === "completed") {
+    return { ok: true as const, manualCheckout: true };
   }
 
   return processCheckIn({
@@ -982,15 +1043,35 @@ export async function liveTotalsForActiveSession(employeeId: string) {
 }
 
 /** The scheduled shift end (UTC) for a session's day, or null if not scheduled. */
-async function getShiftEnd(session: any): Promise<Date | null> {
+/**
+ * When this session must be closed by.
+ *
+ * Never null. A schedule row with isWorkingDay true and no expectedEndAt used to
+ * return null here, which meant NO deadline at all and nothing to close the
+ * session — one ran 11h41m in production before an unrelated geofence exit ended
+ * it. resolveSessionDeadline falls back to a hard cap so an incomplete roster
+ * can no longer leave a session open indefinitely.
+ */
+async function getShiftEnd(session: any): Promise<Date> {
   const day = await AttendanceDay.findById(session.attendanceDayId).lean();
-  if (!day) return null;
-  const schedule = await EmployeeSchedule.findOne({
-    employeeId: session.employeeId,
-    workDate: day.workDate,
-  }).lean();
-  if (!schedule || !schedule.isWorkingDay || !schedule.expectedEndAt) return null;
-  return new Date(schedule.expectedEndAt);
+  const schedule = day
+    ? await EmployeeSchedule.findOne({
+        employeeId: session.employeeId,
+        workDate: day.workDate,
+      }).lean()
+    : null;
+
+  const scheduledEndMs =
+    schedule?.isWorkingDay && schedule.expectedEndAt
+      ? new Date(schedule.expectedEndAt).getTime()
+      : null;
+
+  const { deadlineMs } = resolveSessionDeadline({
+    checkInMs: new Date(session.checkInAt).getTime(),
+    scheduledEndMs,
+    maxSessionMs: env.MAX_SESSION_HOURS * 3600_000,
+  });
+  return new Date(deadlineMs);
 }
 
 /**
@@ -1000,8 +1081,13 @@ async function getShiftEnd(session: any): Promise<Date | null> {
  * exactly as getShiftEnd returns null for the same cases.
  */
 async function getShiftEndsForSessions(sessions: any[]): Promise<Map<string, Date | null>> {
+  // Every session gets a deadline, defaulting to the hard cap — see getShiftEnd.
+  const maxSessionMs = env.MAX_SESSION_HOURS * 3600_000;
   const result = new Map<string, Date | null>(
-    sessions.map((s) => [String(s._id), null])
+    sessions.map((s) => [
+      String(s._id),
+      new Date(new Date(s.checkInAt).getTime() + maxSessionMs),
+    ])
   );
   if (sessions.length === 0) return result;
 
@@ -1030,7 +1116,14 @@ async function getShiftEndsForSessions(sessions: any[]): Promise<Map<string, Dat
     if (!workDate) continue; // no AttendanceDay -> null, same as getShiftEnd
     const schedule = scheduleByPair.get(`${String(session.employeeId)}|${workDate}`);
     if (!schedule || !schedule.isWorkingDay || !schedule.expectedEndAt) continue;
-    result.set(String(session._id), new Date(schedule.expectedEndAt));
+    // A scheduled end only applies when it is EARLIER than the cap; a roster
+    // stretching past it is itself an error and must not reopen the hole.
+    const { deadlineMs } = resolveSessionDeadline({
+      checkInMs: new Date(session.checkInAt).getTime(),
+      scheduledEndMs: new Date(schedule.expectedEndAt).getTime(),
+      maxSessionMs,
+    });
+    result.set(String(session._id), new Date(deadlineMs));
   }
   return result;
 }
@@ -1212,6 +1305,89 @@ export function summarizePings(
   return summarizeSessionPings(pings, endTimeMs ?? Date.now());
 }
 
+/**
+ * Re-open a session when a ping shows the employee back inside their site.
+ *
+ * Mirrors processGeofenceEnter's conditions exactly, so a return is handled the
+ * same however it is detected: the day must already have been started by hand,
+ * a deliberate check-out is respected, and the schedule gate still applies.
+ * Returns the new session, or null when nothing should be opened.
+ */
+async function tryPingAutoCheckIn(opts: {
+  employeeId: string;
+  companyId: string;
+  pings: Array<{
+    lat: number;
+    lng: number;
+    accuracyMeters?: number;
+    capturedAt?: string;
+    deviceId?: string;
+  }>;
+}): Promise<any | null> {
+  if (!env.AUTO_CHECKIN_ENABLED) return null;
+
+  // Use the NEWEST ping: where they are now, not where they were.
+  const sorted = [...opts.pings].sort(
+    (a, b) =>
+      new Date(a.capturedAt ?? Date.now()).getTime() -
+      new Date(b.capturedAt ?? Date.now()).getTime()
+  );
+  const latest = sorted[sorted.length - 1];
+  if (!latest) return null;
+
+  const at = latest.capturedAt
+    ? new Date(clampEventTimeToNow(new Date(latest.capturedAt).getTime(), Date.now()))
+    : new Date();
+
+  const timezone = await getCompanyTimezone(opts.companyId);
+  const workDate = getWorkDateInTimezone(at, timezone);
+
+  const day = await AttendanceDay.findOne({
+    employeeId: new Types.ObjectId(opts.employeeId),
+    workDate,
+  })
+    .select("_id")
+    .lean();
+  const lastToday = day
+    ? await AttendanceSession.findOne({ attendanceDayId: day._id })
+        .sort({ checkInAt: -1 })
+        .select("status")
+        .lean()
+    : null;
+
+  const found = await resolveCheckInSite({ ...opts, ...latest }, workDate);
+  if (!found) return null;
+
+  const inside =
+    found.distance <= found.site.radiusMeters + (latest.accuracyMeters ?? 0);
+
+  if (
+    !shouldPingAutoCheckIn({
+      isInsideGeofence: inside,
+      hasSessionToday: !!lastToday,
+      lastSessionStatus: lastToday?.status ?? null,
+    })
+  ) {
+    return null;
+  }
+
+  const result = await processCheckIn({
+    employeeId: opts.employeeId,
+    companyId: opts.companyId,
+    timezone,
+    lat: latest.lat,
+    lng: latest.lng,
+    accuracyMeters: latest.accuracyMeters,
+    deviceId: latest.deviceId ?? "auto-ping",
+    capturedAt: at.toISOString(),
+  });
+  if (!result.ok) return null;
+
+  // eslint-disable-next-line no-console
+  console.log(`[auto-checkin] ping re-opened a session for ${opts.employeeId}`);
+  return AttendanceSession.findById(result.session._id);
+}
+
 export async function processPings(opts: {
   employeeId: string;
   companyId: string;
@@ -1232,11 +1408,23 @@ export async function processPings(opts: {
   const employeeId = new Types.ObjectId(opts.employeeId);
   const companyId = new Types.ObjectId(opts.companyId);
 
-  const session = await AttendanceSession.findOne({
+  let session = await AttendanceSession.findOne({
     employeeId,
     status: { $in: ["active", "flagged"] },
   }).sort({ checkInAt: -1 });
-  if (!session) return { ok: false as const, reason: "no_active_session" };
+
+  // NO OPEN SESSION — this may be the employee coming BACK.
+  //
+  // Pings are the primary way a return is noticed. They arrive on a fixed
+  // cadence, whereas the OS geofence only fires on a crossing it can miss
+  // altogether, so tracking deliberately continues after an automatic check-out
+  // and these pings are what put the employee back on the clock. Dropping them
+  // as "no active session" meant a return was only ever caught by the geofence.
+  if (!session) {
+    const reopened = await tryPingAutoCheckIn(opts);
+    if (!reopened) return { ok: false as const, reason: "no_active_session" };
+    session = reopened;
+  }
 
   // Use the geofence SNAPSHOT taken at check-in, so an admin editing the site
   // (or reassigning the employee) mid-shift can't move the geofence under them.
@@ -1263,15 +1451,7 @@ export async function processPings(opts: {
   // close the session at the shift-end time (storing totals) instead of tracking
   // further. The employee never has to press check-out at the end of the day.
   const shiftEnd = await getShiftEnd(session);
-  if (shiftEnd && Date.now() > shiftEnd.getTime()) {
-    await closeSessionAtShiftEnd(session, shiftEnd);
-    return {
-      ok: true as const,
-      received: 0,
-      autoCheckedOut: true,
-      autoCheckoutAt: shiftEnd.toISOString(),
-    };
-  }
+  const shiftEndPassed = Date.now() > shiftEnd.getTime();
 
   // Determine previous "inside" state from last ping
   const lastPing = await LocationPing.findOne({ sessionId: session._id })
@@ -1337,7 +1517,19 @@ export async function processPings(opts: {
   let autoCheckedOut = false;
   let autoCheckoutAt: Date | null = null;
 
-  for (const p of sorted) {
+  // The shift is over, but this batch may still be carrying pings from BEFORE it
+  // ended — a phone that buffered through a dead zone and uploaded late. Those
+  // are real evidence of real work, so they are recorded first and only the ones
+  // captured after the deadline are dropped. Returning `received: 0` here (as
+  // this used to) discarded the lot and left the shift looking untracked.
+  const withinShift = shiftEndPassed
+    ? sorted.filter((p) => {
+        const t = p.capturedAt ? new Date(p.capturedAt).getTime() : Date.now();
+        return t <= shiftEnd.getTime();
+      })
+    : sorted;
+
+  for (const p of withinShift) {
     const { inside, distance } = isInsideGeofence(
       { lat: p.lat, lng: p.lng },
       { lat: siteLat, lng: siteLng },
@@ -1430,6 +1622,18 @@ export async function processPings(opts: {
       }
       currentlyInside = effectiveInside;
     }
+  }
+
+  // Now that any in-shift pings from this batch are stored, close the session at
+  // its deadline. Doing this before the loop threw those pings away.
+  if (shiftEndPassed) {
+    await closeSessionAtShiftEnd(session, shiftEnd);
+    return {
+      ok: true as const,
+      received: withinShift.length,
+      autoCheckedOut: true,
+      autoCheckoutAt: shiftEnd.toISOString(),
+    };
   }
 
   // Run mock detection over the whole session
@@ -1550,7 +1754,7 @@ export async function processPings(opts: {
 
   return {
     ok: true as const,
-    received: sorted.length,
+    received: withinShift.length,
     autoCheckedOut,
     autoCheckoutAt: autoCheckoutAt ? autoCheckoutAt.toISOString() : null,
   };

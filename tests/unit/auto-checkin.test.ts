@@ -25,6 +25,9 @@ const base: Args = {
   scheduleEndMs: END,
   graceMinutes: 10,
   lastSessionStatus: null,
+  // The day has already been started by hand; these cases are about what
+  // happens AFTERWARDS. The "must start manually" rule has its own tests.
+  hasSessionToday: true,
   nowMs: START + 60 * MIN, // 10:00, comfortably inside the shift
 };
 

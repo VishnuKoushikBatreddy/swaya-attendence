@@ -613,6 +613,7 @@ export const AUTO_CHECKIN_REASONS = {
   NO_SCHEDULE: "no_schedule",
   OUTSIDE_HOURS: "outside_hours",
   MANUAL_CHECKOUT: "manual_checkout",
+  NEEDS_MANUAL_START: "needs_manual_start",
 } as const;
 
 /**
@@ -647,6 +648,15 @@ export function evaluateAutoCheckIn(opts: {
   graceMinutes: number;
   /** Status of the most recent session today: "completed" means manual. */
   lastSessionStatus: string | null;
+  /**
+   * Whether the employee has already started their day by checking in by hand.
+   *
+   * The FIRST check-in of a day is the employee's own decision — the app does
+   * not put someone on the clock merely for walking past their site before they
+   * have started work. Auto check-in exists to RESUME a day already under way
+   * after an automatic check-out, not to begin one.
+   */
+  hasSessionToday: boolean;
   nowMs: number;
 }): { ok: true } | { ok: false; reason: string } {
   const R = AUTO_CHECKIN_REASONS;
@@ -656,6 +666,12 @@ export function evaluateAutoCheckIn(opts: {
   if (!opts.hasSite) return { ok: false, reason: R.NO_SITE };
   if (opts.lastSessionStatus === "completed") {
     return { ok: false, reason: R.MANUAL_CHECKOUT };
+  }
+  // Nothing yet today: the employee has not started work, so there is nothing to
+  // resume. Without this the geofence checked people in simply for arriving,
+  // which is how a day's first session came to be created automatically.
+  if (!opts.hasSessionToday) {
+    return { ok: false, reason: R.NEEDS_MANUAL_START };
   }
   if (opts.scheduleStartMs == null || opts.scheduleEndMs == null) {
     return { ok: false, reason: R.NO_SCHEDULE };
@@ -819,4 +835,81 @@ export function deriveIsFlagged(reasons: Iterable<string> | null | undefined): b
     if (isRealFlagReason(r)) return true;
   }
   return false;
+}
+
+/**
+ * The deadline a session must be closed by.
+ *
+ * A scheduled end is preferred, but it cannot be the only answer. A schedule row
+ * with isWorkingDay true and no expectedEndAt passes the check-in gate and then
+ * yields NO deadline at all, so nothing ever closes the session: production had
+ * one run 11h41m before an unrelated geofence exit happened to end it. Sessions
+ * were effectively unbounded whenever the roster was incomplete.
+ *
+ * The cap is a backstop, not a policy. It only decides anything when the
+ * schedule failed to, and it is deliberately longer than any real shift so it
+ * never truncates legitimate work.
+ */
+export function resolveSessionDeadline(opts: {
+  checkInMs: number;
+  scheduledEndMs: number | null;
+  maxSessionMs: number;
+}): { deadlineMs: number; source: "schedule" | "max_duration" } {
+  const cap = opts.checkInMs + opts.maxSessionMs;
+  if (opts.scheduledEndMs == null) return { deadlineMs: cap, source: "max_duration" };
+  // Whichever comes first: a schedule stretching beyond the cap is itself a
+  // roster error, and honouring it would reopen the same hole.
+  return opts.scheduledEndMs <= cap
+    ? { deadlineMs: opts.scheduledEndMs, source: "schedule" }
+    : { deadlineMs: cap, source: "max_duration" };
+}
+
+/**
+ * Whether location should be captured right now.
+ *
+ * Tracking is NOT the same thing as being checked in. Once the employee has
+ * started their day by hand, pings run for the whole scheduled window — through
+ * an automatic check-out and beyond it — because those pings are what notice
+ * they have come back and drive the automatic check-in. Stopping on auto
+ * check-out would remove the very signal needed to detect the return, leaving
+ * only the OS geofence, which fires on crossings the app cannot rely on.
+ *
+ * Three things end it, and only three:
+ *   - the day has not been started manually yet (nothing to track)
+ *   - the employee deliberately checked out (they meant it)
+ *   - the scheduled window closed
+ */
+export function shouldTrackNow(opts: {
+  /** Any session today — the day has been started by hand. */
+  hasSessionToday: boolean;
+  /** Status of the most recent session today; "completed" means manual. */
+  lastSessionStatus: string | null;
+  withinTrackingWindow: boolean;
+}): boolean {
+  if (!opts.hasSessionToday) return false;
+  if (opts.lastSessionStatus === "completed") return false;
+  return opts.withinTrackingWindow;
+}
+
+/**
+ * Whether an incoming ping should open a session on its own.
+ *
+ * Pings are the PRIMARY way a return to the site is noticed: they arrive on a
+ * fixed cadence, whereas an OS geofence only fires on a crossing it may miss
+ * entirely. The geofence is the backup, not the other way round.
+ *
+ * The conditions match processGeofenceEnter's exactly, so a return is treated
+ * the same however it is spotted.
+ */
+export function shouldPingAutoCheckIn(opts: {
+  isInsideGeofence: boolean;
+  hasSessionToday: boolean;
+  lastSessionStatus: string | null;
+}): boolean {
+  if (!opts.isInsideGeofence) return false;
+  // Never STARTS a day — that is the employee's own decision.
+  if (!opts.hasSessionToday) return false;
+  // A deliberate check-out outranks being back on site.
+  if (opts.lastSessionStatus === "completed") return false;
+  return true;
 }
